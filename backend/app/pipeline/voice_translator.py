@@ -1,0 +1,86 @@
+"""One direction, voice to voice: utterance audio -> STT -> MT -> TTS -> audio sink.
+
+Latency trick: translation and speech run sentence by sentence. The first sentence is
+spoken as soon as it is translated and synthesised, while later sentences are still being
+processed — the listener never waits for the whole utterance.
+
+The sink is any callable taking AudioChunk: headphones (AudioPlayer.enqueue) today, the
+virtual microphone in Phase 7. The pipeline doesn't know or care which.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Callable
+
+import numpy as np
+
+from app.pipeline.language import LanguageDecision
+from app.pipeline.speech_translator import SpeechTranslator
+from app.services.audio.format import duration_seconds
+from app.services.stt.base import Transcript
+from app.services.tts.base import AudioChunk, NoVoiceError, TextToSpeechProvider
+
+AudioSink = Callable[[AudioChunk], None]
+
+
+@dataclass
+class VoiceResult:
+    transcript: Transcript
+    language: LanguageDecision
+    target_language: str
+    pairs: list[tuple[str, str]] = field(default_factory=list)  # (source sentence, translation)
+    audio_seconds: float = 0.0  # input speech length
+    speech_seconds: float = 0.0  # generated speech length
+    # ms measured from the end of the user's speech (= when process() was called)
+    stt_ms: float = 0.0
+    first_audio_ms: float | None = None  # the latency the listener actually feels
+    total_ms: float = 0.0
+    text_only: bool = False  # no voice for the target language -> subtitles only
+
+    @property
+    def translated_text(self) -> str:
+        return " ".join(t for _, t in self.pairs if t)
+
+    @property
+    def skipped(self) -> bool:
+        return self.transcript.is_empty
+
+
+class VoiceTranslator:
+    def __init__(self, translator: SpeechTranslator, tts: TextToSpeechProvider, *,
+                 voice: str | None = None, speed: float = 1.0):
+        self.translator, self.tts, self.voice, self.speed = translator, tts, voice, speed
+        self.speak = True  # False = subtitles only (no voice for the target language)
+
+    @property
+    def target(self) -> str:
+        return self.translator.target
+
+    def process(self, audio: np.ndarray, sink: AudioSink, *, speak: bool = True) -> VoiceResult:
+        """speak=False: translate but don't voice it (backlog / subtitles-only)."""
+        t0 = time.perf_counter()
+        ms = lambda: (time.perf_counter() - t0) * 1000  # noqa: E731
+        transcript, decision = self.translator.transcribe(audio)
+        result = VoiceResult(transcript, decision, self.target,
+                             audio_seconds=duration_seconds(audio), stt_ms=ms())
+        if transcript.is_empty:
+            result.total_ms = ms()
+            return result
+        for source_sentence, translated in self.translator.translate_sentences(transcript.text, decision.code):
+            result.pairs.append((source_sentence, translated))
+            if not (self.speak and speak):
+                result.text_only = True
+                continue
+            try:
+                for chunk in self.tts.synthesize_stream(translated, self.target, voice=self.voice,
+                                                        speed=self.speed):
+                    if result.first_audio_ms is None:
+                        result.first_audio_ms = ms()
+                    result.speech_seconds += chunk.seconds
+                    sink(chunk)
+            except NoVoiceError:
+                self.speak, result.text_only = False, True
+        result.total_ms = ms()
+        return result

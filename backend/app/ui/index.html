@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>المترجم الفوري</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h9M8.5 3v2M6 5c.5 3 2.5 5.5 5 7M11 5c-.6 3.4-3 6.5-6.5 8.5M13 21l4.5-10L22 21M14.5 17.5h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span data-i18n="app_name">المترجم الفوري</span>
+    </div>
+    <div class="top-actions">
+      <span id="status" class="pill idle"><i></i><span id="status-text" data-i18n="st_idle">متوقف</span></span>
+      <button id="btn-lang-ui" class="ghost" title="English">EN</button>
+      <button id="btn-settings" class="ghost" data-i18n-title="settings" title="الإعدادات">
+        <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="firstrun" class="firstrun" hidden>
+    <div class="panel firstrun-card">
+      <h2 data-i18n="fr_title">مرحبًا! خطوة أخيرة قبل الاستخدام</h2>
+      <p data-i18n="fr_body">يحتاج البرنامج لتنزيل نماذج الذكاء الاصطناعي مرة واحدة فقط. بعدها يعمل بدون إنترنت تمامًا.</p>
+      <div id="fr-list" class="fr-list"></div>
+      <div class="bar"><i id="fr-bar"></i></div>
+      <p id="fr-status" class="fr-status"></p>
+      <button id="btn-download" class="start" data-i18n="fr_download">تنزيل الآن</button>
+    </div>
+  </div>
+
+  <main>
+    <section class="panel controls">
+      <div class="langs">
+        <label class="field">
+          <span data-i18n="my_language">لغتي</span>
+          <select id="my_language"></select>
+        </label>
+        <button id="btn-swap" class="swap" data-i18n-title="swap" title="تبديل">⇄</button>
+        <label class="field">
+          <span data-i18n="other_language">لغة الطرف الآخر</span>
+          <select id="other_language"></select>
+        </label>
+      </div>
+      <label class="field">
+        <span data-i18n="meeting_app">صوت الاجتماع من</span>
+        <select id="meeting_app"></select>
+      </label>
+
+      <button id="btn-start" class="start">
+        <span class="dot"></span><span id="start-text" data-i18n="start">ابدأ الترجمة</span>
+      </button>
+
+      <div class="row-buttons">
+        <button id="btn-mute" class="chip" disabled data-i18n="mute">كتم الميكروفون</button>
+        <button id="btn-pause" class="chip" disabled data-i18n="pause">إيقاف مؤقت</button>
+        <button id="btn-replay" class="chip" disabled data-i18n="replay">إعادة آخر ترجمة</button>
+      </div>
+
+      <button id="btn-demo" class="chip demo" data-i18n="demo">▶ تجربة سريعة بدون اجتماع</button>
+      <div id="hint" class="hint" hidden></div>
+      <div id="setup" class="setup" hidden></div>
+    </section>
+
+    <section class="panel convo">
+      <div class="convo-head">
+        <h2 data-i18n="conversation">المحادثة</h2>
+        <label class="toggle"><input type="checkbox" id="show_original" checked><span data-i18n="show_original">إظهار النص الأصلي</span></label>
+      </div>
+      <div id="messages" class="messages" aria-live="polite">
+        <div class="empty" id="empty" data-i18n="empty">اضغط «ابدأ الترجمة» ثم تكلم بشكل طبيعي. ستظهر المحادثة هنا.</div>
+      </div>
+      <div class="live">
+        <div class="live-line me" id="live-me" hidden></div>
+        <div class="live-line other" id="live-other" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settings">
+    <form method="dialog" class="settings-form">
+      <header><h2 data-i18n="settings">الإعدادات</h2><button class="ghost" value="close">✕</button></header>
+      <div class="grid">
+        <label class="field"><span data-i18n="microphone">الميكروفون</span><select id="input_device"></select></label>
+        <label class="field"><span data-i18n="speaker">السماعة (تسمع فيها الترجمة)</span><select id="output_device"></select></label>
+        <label class="field"><span data-i18n="latency_mode">السرعة مقابل الدقة</span>
+          <select id="latency_mode">
+            <option value="fast" data-i18n="lat_fast">أسرع (قد يقطع الجمل)</option>
+            <option value="balanced" data-i18n="lat_balanced">متوازن</option>
+            <option value="accurate" data-i18n="lat_accurate">أدق (ينتظر أكثر)</option>
+          </select></label>
+        <label class="field"><span data-i18n="speech_speed">سرعة صوت الترجمة</span>
+          <input type="range" id="speech_speed" min="0.7" max="1.5" step="0.05"><output id="speed_out"></output></label>
+      </div>
+      <div class="toggles">
+        <label class="toggle"><input type="checkbox" id="headphones"><span data-i18n="headphones">أستخدم سماعة رأس (يمنع الصدى)</span></label>
+        <label class="toggle"><input type="checkbox" id="live_subtitles"><span data-i18n="live_subtitles">ترجمة نصية أثناء الكلام</span></label>
+        <label class="toggle"><input type="checkbox" id="hear_my_translation"><span data-i18n="hear_mine">اسمع ترجمتي بصوت منخفض</span></label>
+        <label class="toggle"><input type="checkbox" id="save_history"><span data-i18n="save_history">حفظ سجل المحادثات (نص فقط، على جهازي)</span></label>
+      </div>
+      <div class="history-tools">
+        <button type="button" class="chip" id="btn-history" data-i18n="show_history">عرض السجل</button>
+        <button type="button" class="chip danger" id="btn-clear-history" data-i18n="clear_history">مسح السجل</button>
+        <button type="button" class="chip" id="btn-doctor" data-i18n="check_setup">فحص الإعداد</button>
+      </div>
+      <p class="privacy" data-i18n="privacy">🔒 كل شيء يعمل على جهازك. لا يُرسل صوتك لأي خادم، ولا يُحفظ الصوت أبدًا.</p>
+      <footer><button class="primary" id="btn-save" value="save" data-i18n="save">حفظ</button></footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/ui/i18n.js"></script>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

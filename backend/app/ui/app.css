@@ -90,6 +90,17 @@ select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-r
 .live-line.speaking .text:empty::after { content: "● ● ●"; letter-spacing: 2px; animation: blink 1s infinite; }
 .live-line.me { border-inline-start: 3px solid var(--accent); }
 .live-line.other { border-inline-start: 3px solid var(--ok); }
+.meters { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.meter { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 8px; }
+.meter .track { height: 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.meter .track i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .1s linear; }
+.meter.speaking .track i { background: var(--accent); }
+.meter.clip .track i { background: var(--bad); }
+.section { margin: 4px 0 -6px; font-size: 14px; }
+textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; resize: vertical; }
+.voices { display: flex; flex-direction: column; gap: 8px; }
+.voice-row { display: grid; grid-template-columns: minmax(110px, auto) 1fr auto; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+@media (max-width: 560px) { .voice-row { grid-template-columns: 1fr auto; } .voice-row span { grid-column: 1 / -1; } }
 .convo-tools { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 10px; }
 .stat { font-size: 12px; color: var(--muted); margin-inline-start: auto; }
 .note { background: var(--bg); border: 1px dashed var(--line); border-radius: 12px; padding: 10px 12px; font-size: 13px; line-height: 1.7; color: var(--muted); }

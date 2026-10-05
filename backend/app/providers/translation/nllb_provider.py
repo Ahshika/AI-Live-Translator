@@ -84,6 +84,7 @@ class NLLBProvider(TranslationProvider):
                 beam_size=self.beam_size,
                 max_decoding_length=max(len(b) for b in batch) * 2 + 16,
                 repetition_penalty=1.1,  # NLLB sometimes loops on short/noisy STT input
+                no_repeat_ngram_size=4,  # ...and repeats whole phrases ("we go we go we go")
             )
         # Drop the forced target-language token from each hypothesis.
         return [self._decode(r.hypotheses[0][1:]) for r in results]

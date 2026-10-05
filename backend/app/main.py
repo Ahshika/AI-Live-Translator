@@ -133,6 +133,25 @@ class Engine:
         }
 
 
+_PREVIEWS = {
+    "ar": "مرحبًا، هكذا سيبدو صوت الترجمة في الاجتماع.",
+    "de": "Hallo, so klingt die Übersetzung im Meeting.",
+    "en": "Hello, this is how the translation will sound in the meeting.",
+    "fr": "Bonjour, voici à quoi ressemblera la traduction pendant la réunion.",
+    "es": "Hola, así sonará la traducción en la reunión.",
+    "it": "Ciao, ecco come suonerà la traduzione durante la riunione.",
+    "tr": "Merhaba, toplantıda çeviri böyle duyulacak.",
+    "ru": "Здравствуйте, так будет звучать перевод на встрече.",
+    "pt": "Olá, é assim que a tradução vai soar na reunião.",
+    "nl": "Hallo, zo klinkt de vertaling tijdens de vergadering.",
+}
+
+
+def preview_sentence(language: str) -> str:
+    lang = languages.get(language)
+    return _PREVIEWS.get(lang.base, f"{lang.native}. 1, 2, 3.")
+
+
 def _offer(q: asyncio.Queue, data: str) -> None:
     """Deliver to one UI; a client that stopped reading loses its oldest events, not the engine."""
     if q.full():
@@ -237,6 +256,68 @@ def create_app(engine: Engine | None = None, token: str | None = None) -> FastAP
             engine.installer = assets.AssetInstaller(engine.settings, on_progress=engine.publish)
             engine.installer.start()
         return {"ok": True}
+
+    # -- voices ---------------------------------------------------------------
+    def _tts():
+        from app.providers.tts.piper_provider import PiperProvider
+
+        return engine.providers.tts if engine.providers else PiperProvider(
+            preferred=engine.settings.preferred_voices())
+
+    @app.get("/api/voices", dependencies=[Depends(auth)])
+    def get_voices(language: str):
+        if language not in languages.LANGUAGES:
+            raise HTTPException(400, f"unknown language {language!r}")
+        tts = _tts()
+        if not hasattr(tts, "voice_choices"):
+            return {"selected": None, "voices": []}
+        tts.load()
+        base = languages.get(language).base
+        return {"selected": engine.settings.preferred_voices().get(base), "voices": tts.voice_choices(base)}
+
+    @app.put("/api/voices", dependencies=[Depends(auth)])
+    async def put_voice(request: Request):
+        body = await request.json()
+        language, voice = body.get("language"), body.get("voice") or None
+        if language not in languages.LANGUAGES:
+            raise HTTPException(400, f"unknown language {language!r}")
+        if engine.session and engine.session.state in ("starting", "running", "paused"):
+            raise HTTPException(409, "stop translation before changing settings")
+        new = engine.settings.with_voice(languages.get(language).base, voice)
+        return engine.update_settings({"tts_voices": new.tts_voices}).to_dict()
+
+    @app.post("/api/voices/preview", dependencies=[Depends(auth)])
+    async def preview_voice(request: Request):
+        body = await request.json()
+        language, voice = body.get("language"), body.get("voice") or None
+        if language not in languages.LANGUAGES:
+            raise HTTPException(400, f"unknown language {language!r}")
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, _play_preview, _tts(), language, voice)
+        except Exception as exc:
+            log.warning("voice preview failed: %s", exc)
+            return JSONResponse({"ok": False, "code": "voice_preview", "message": str(exc)}, status_code=409)
+        return {"ok": True}
+
+    def _play_preview(tts, language: str, voice: str | None) -> None:
+        from app.pipeline.voice_translator import VoiceTranslator
+        from app.services.audio.enhance import normalize_loudness
+        from app.services.audio.playback import AudioPlayer
+        from app.services.tts.base import AudioChunk
+
+        tts.load()
+        if voice and hasattr(tts, "install_voice"):
+            tts.install_voice(voice)
+        player = AudioPlayer(engine.settings.output_device)
+        player.start()
+        try:
+            for chunk in tts.synthesize_stream(preview_sentence(language), language, voice=voice,
+                                               speed=engine.settings.speech_speed):
+                player.enqueue(AudioChunk(normalize_loudness(chunk.samples, VoiceTranslator.OUTPUT_DBFS, 20.0),
+                                          chunk.sample_rate))
+            player.wait(timeout=15)
+        finally:
+            player.close()
 
     @app.get("/api/history", dependencies=[Depends(auth)])
     def get_history(limit: int = 200):

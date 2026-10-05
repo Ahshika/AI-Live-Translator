@@ -46,12 +46,12 @@ def make(text, lang="ar", source="ar", target="de"):
 
 
 def test_each_sentence_is_spoken_in_order_as_soon_as_translated():
-    vt, tts = make("جملة أولى. جملة ثانية؟")
+    vt, tts = make("هذه هي الجملة الأولى هنا. وهذه هي الجملة الثانية هنا؟")
     received = []
     r = vt.process(np.zeros(16_000, np.float32), received.append)
-    assert tts.spoken == [("<de>جملة أولى.", "de"), ("<de>جملة ثانية؟", "de")]
+    assert tts.spoken == [("<de>هذه هي الجملة الأولى هنا.", "de"), ("<de>وهذه هي الجملة الثانية هنا؟", "de")]
     assert len(received) == 2 and r.speech_seconds == pytest.approx(0.2)
-    assert r.translated_text == "<de>جملة أولى. <de>جملة ثانية؟"
+    assert r.translated_text == "<de>هذه هي الجملة الأولى هنا. <de>وهذه هي الجملة الثانية هنا؟"
     assert 0 <= r.stt_ms <= r.first_audio_ms <= r.total_ms
 
 
@@ -96,7 +96,7 @@ class NoVoiceTTS(FakeTTS):
 
 
 def test_missing_voice_falls_back_to_subtitles():
-    st = SpeechTranslator(FakeSTT("جملة. وجملة.", "ar", 0.99), FakeMT(), source="ar", target="de")
+    st = SpeechTranslator(FakeSTT("هذه هي الجملة الأولى هنا. وهذه هي الجملة الثانية هنا.", "ar", 0.99), FakeMT(), source="ar", target="de")
     vt = VoiceTranslator(st, NoVoiceTTS())
     got = []
     r = vt.process(np.zeros(16_000, np.float32), got.append)

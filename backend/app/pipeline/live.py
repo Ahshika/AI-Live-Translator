@@ -26,6 +26,7 @@ import numpy as np
 
 from app.pipeline.segmenter import PartialAudio, SpeechStarted, UtteranceEnded, UtteranceSegmenter
 from app.pipeline.voice_translator import AudioSink, VoiceTranslator
+from app.services.audio.format import rms_dbfs
 
 log = logging.getLogger(__name__)
 EventCallback = Callable[[dict[str, Any]], None]
@@ -52,12 +53,16 @@ class LiveDirection:
 
     def __init__(self, name: str, source: AudioSource, segmenter: UtteranceSegmenter,
                  translator: VoiceTranslator, sink: AudioSink, *, on_event: EventCallback | None = None,
-                 pause_when: Callable[[], bool] | None = None, partials: bool = True):
+                 pause_when: Callable[[], bool] | None = None, partials: bool = True,
+                 conditioner: Any = None):
+        """conditioner: optional mic clean-up (app.services.audio.enhance.Conditioner)."""
         self.name, self.source, self.segmenter = name, source, segmenter
         self.translator, self.sink = translator, sink
         self.on_event = on_event or (lambda e: None)
         self.pause_when = pause_when  # e.g. echo guard: our own speaker is playing
         self.partials = partials
+        self.conditioner = conditioner
+        self._level_sum, self._level_n, self._level_peak = 0.0, 0, 0.0
         self._queue: queue.Queue[_Utterance | None] = queue.Queue()
         self._pending: list[_Utterance] = []
         self._pending_lock = threading.Lock()
@@ -69,6 +74,7 @@ class LiveDirection:
         self._reset_segmenter = False
         self._threads: list[threading.Thread] = []
         self.stats = {"utterances": 0, "dropped_to_text": 0, "errors": 0}
+        self.quiet_utterances = 0  # in a row; triggers a "your mic is very quiet" hint
 
     # -- control -------------------------------------------------------------
     def start(self) -> None:
@@ -135,7 +141,26 @@ class LiveDirection:
                 log.exception("%s segmenter failed", self.name)
                 self.segmenter.reset()
 
+    CATCH_UP_SPEED = 1.15
+    LEVEL_EVERY = 6  # frames (120 ms) per level-meter update
+
+    def _meter(self, frame: np.ndarray) -> None:
+        self._level_sum += float(np.mean(frame * frame))
+        self._level_peak = max(self._level_peak, float(np.max(np.abs(frame))))
+        self._level_n += 1
+        if self._level_n >= self.LEVEL_EVERY:
+            mean = self._level_sum / self._level_n
+            db = 10 * np.log10(mean) if mean > 0 else -100.0
+            self._emit("level", db=round(max(db, -100.0), 1), clipping=self._level_peak >= 0.99,
+                       speaking=self.segmenter.in_speech)
+            self._level_sum, self._level_n, self._level_peak = 0.0, 0, 0.0
+
     def _segment(self, frame: np.ndarray) -> None:
+        if self.conditioner is not None:
+            frame = self.conditioner.frame(frame)
+            if not self.segmenter.in_speech:
+                self.conditioner.silence(frame)
+        self._meter(frame)
         self.segmenter.paused = bool(self.pause_when and self.pause_when())
         for ev in self.segmenter.feed(frame):
             if isinstance(ev, SpeechStarted):
@@ -148,7 +173,25 @@ class LiveDirection:
                 # The speaker actually stopped end_silence_ms ago (that's how we knew):
                 # measure latency from there, i.e. what the listener really waits.
                 waited = 0 if ev.forced else self.segmenter.cfg.end_silence_ms / 1000
-                self._enqueue(_Utterance(ev.audio, time.perf_counter() - waited, ev.forced))
+                self._enqueue(_Utterance(self._prepare(ev.audio), time.perf_counter() - waited, ev.forced))
+
+    QUIET_DBFS = -45.0
+
+    def _prepare(self, audio: np.ndarray) -> np.ndarray:
+        """Mic clean-up for a finished utterance, plus the 'mic too quiet' check."""
+        if rms_dbfs(audio) < self.QUIET_DBFS:
+            self.quiet_utterances += 1
+            if self.quiet_utterances == 3:
+                self._emit("warning", code="mic_quiet")
+        else:
+            self.quiet_utterances = 0
+        if self.conditioner is None:
+            return audio
+        try:
+            return self.conditioner.utterance(audio)
+        except Exception:
+            log.exception("audio enhancement failed; using the raw audio")
+            return audio
 
     def _recover_source(self, failures: int) -> None:
         """Wait a little, then reopen the source (a re-plugged headset, a restarted helper)."""
@@ -202,7 +245,10 @@ class LiveDirection:
                 first_audio.append(time.perf_counter())
             self.sink(chunk)
 
-        r = self.translator.process(utt.audio, sink, speak=utt.speak)
+        with self._pending_lock:  # someone is already waiting: catch up a little
+            behind = any(u.speak and not u.cancelled for u in self._pending)
+        r = self.translator.process(utt.audio, sink, speak=utt.speak,
+                                    speed_factor=self.CATCH_UP_SPEED if behind else 1.0)
         if r.skipped:
             return
         self.stats["utterances"] += 1
@@ -224,6 +270,8 @@ class LiveDirection:
             if audio is None or self._busy.is_set():  # finals always win the GPU
                 continue
             try:
+                if self.conditioner is not None:
+                    audio = self.conditioner.partial(audio)
                 t = stt.transcribe(audio, language(), fast=True)
             except Exception:
                 continue

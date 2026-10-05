@@ -30,7 +30,12 @@ WHISPER_REPOS = {
     "small": "Systran/faster-whisper-small",
     "medium": "Systran/faster-whisper-medium",
 }
-NLLB_REPOS = {"nllb-200-distilled-1.3B-ct2-int8": "OpenNMT/nllb-200-distilled-1.3B-ct2-int8"}
+NLLB_REPOS = {
+    "nllb-200-distilled-1.3B-ct2-int8": "OpenNMT/nllb-200-distilled-1.3B-ct2-int8",
+    # Same family, 2.5x the parameters: noticeably better on dialects, idioms and long sentences.
+    "nllb-200-3.3B-ct2-int8": "OpenNMT/nllb-200-3.3B-ct2-int8",
+}
+NLLB_SIZES_MB = {"nllb-200-distilled-1.3B-ct2-int8": 1380, "nllb-200-3.3B-ct2-int8": 3400}
 # NVIDIA runtime for CTranslate2 (CUDA 12): same packages the dev environment uses.
 CUDA_WHEELS = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 Progress = Callable[[dict], None]
@@ -84,7 +89,8 @@ def plan(settings: Settings) -> list[Component]:
     comps = [
         Component("stt", "نموذج فهم الكلام", 1600 if settings.stt_model == GPU_STT_MODEL else 480,
                   (whisper / "model.bin").exists()),
-        Component("mt", "نموذج الترجمة", 1380, (nllb / "model.bin").exists()),
+        Component("mt", "نموذج الترجمة", NLLB_SIZES_MB.get(settings.translation_model, 1380),
+                  (nllb / "model.bin").exists()),
         Component("voices", "الأصوات", 130, all(has_voice(lang) for lang in voice_langs)),
     ]
     if has_nvidia_gpu():

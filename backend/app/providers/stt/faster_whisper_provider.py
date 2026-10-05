@@ -63,8 +63,14 @@ def is_hallucination(segment) -> bool:
     return segment.no_speech_prob > 0.6 and segment.avg_logprob < -1.0
 
 
+def _echoes(segments, context: str) -> bool:
+    text = " ".join(s.text for s in segments).strip().lower().strip(" .!?،؟")
+    return len(text) >= 4 and text in context.lower()
+
+
 class FasterWhisperProvider(SpeechToTextProvider):
     name = "faster-whisper"
+    supports_context = True
 
     def __init__(self, model: str = "large-v3-turbo", device: str = "auto", compute_type: str = "auto"):
         self.model_name = model
@@ -102,7 +108,8 @@ class FasterWhisperProvider(SpeechToTextProvider):
                 errors.append(f"{device}: {exc}")
         raise STTUnavailableError("Could not load Whisper model: " + " | ".join(errors))
 
-    def transcribe(self, audio: np.ndarray, language: str | None = None, *, fast: bool = False) -> Transcript:
+    def transcribe(self, audio: np.ndarray, language: str | None = None, *, fast: bool = False,
+                   context: str | None = None, hotwords: str | None = None) -> Transcript:
         if self._model is None:
             self.load()
         with self._lock:  # one CTranslate2 model instance -> serialise calls
@@ -113,9 +120,15 @@ class FasterWhisperProvider(SpeechToTextProvider):
                 vad_filter=False,  # VAD is our own pipeline stage (Phase 6)
                 condition_on_previous_text=False,  # avoids hallucination loops on short clips
                 without_timestamps=False,
+                # The previous sentence keeps topic, names and punctuation style consistent
+                # across utterances; hotwords bias recognition toward the user's own terms.
+                initial_prompt=context or None,
+                hotwords=hotwords or None,
             )
             segs = [TranscriptSegment(s.start, s.end, s.text.strip())
                     for s in segments if not is_hallucination(s)]
+            if context and segs and _echoes(segs, context):
+                segs = []  # on near-silence Whisper sometimes just repeats its prompt
         return Transcript(
             text=" ".join(s.text for s in segs if s.text).strip(),
             language=info.language,

@@ -39,6 +39,8 @@ class Transcript:
 
 class SpeechToTextProvider(ABC):
     name: str = "base"
+    # Can it take recent conversation text and expected words as hints (see transcribe)?
+    supports_context: bool = False
 
     @abstractmethod
     def load(self) -> None:
@@ -50,6 +52,9 @@ class SpeechToTextProvider(ABC):
 
         language: Whisper code ("ar", "de"...) or None for auto-detection.
         fast: trade accuracy for speed (used for live partial subtitles, never for translation).
+        Providers with supports_context also accept keyword arguments
+            context: what this speaker said just before (continuity, spelling of names)
+            hotwords: names / terms the user expects ("Ahmed, Siemens, Kubernetes")
         """
 
     def supported_languages(self) -> set[str] | None:

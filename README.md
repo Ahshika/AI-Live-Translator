@@ -33,6 +33,9 @@ Meeting audio (DE) → speech-to-text → translate → Arabic voice → your he
 - **103 languages** for understanding and translation (Arabic ↔ German is the main target), with auto-detection; about 50 have natural voices that download on first use
 - **Virtual microphone** through VB-CABLE, so any meeting app hears the translated voice
 - **Per-app meeting capture**: a small C# helper uses the official Windows *process loopback* API to capture the meeting's audio while excluding the translator's own output, so there's no echo loop
+- **Translation quality**: spoken transcripts are cleaned (fillers like "ähm"/"um", stutters) and tiny fragments translated together; speech recognition gets the previous sentence and your own glossary of names and terms; optional high-quality NLLB 3.3B model
+- **Microphone clean-up**: room-noise reduction learnt while you're silent, hum/rumble filter, automatic gain for quiet mics, live level meters and a "mic too quiet" hint
+- **Voice output**: pick the voice per language with a ▶ preview, the same loudness for every voice, and slightly faster speech when the conversation runs ahead
 - **GPU acceleration** on NVIDIA cards (CUDA libraries are downloaded automatically) with a CPU fallback using a smaller model
 - **Desktop UI** in Arabic and English: conversation view with original + translation, mute, pause, replay last translation, and a quick demo that needs no meeting
 - **First-run setup** downloads the models (~3 GB, 4.5 GB with GPU libraries), resumable on slow connections
@@ -56,7 +59,7 @@ Meeting audio (DE) → speech-to-text → translate → Arabic voice → your he
 |---|---|
 | `backend/app/` | The engine: audio, providers (STT / translation / TTS / VAD), live session, local API server, UI |
 | `backend/scripts/` | Step-by-step demo scripts for each build phase (mic → text, → translation, → voice …) |
-| `backend/tests/` | 106 tests (model and audio-device tests are opt-in) |
+| `backend/tests/` | 130 tests (model and audio-device tests are opt-in) |
 | `native/ProcessLoopback/` | C# helper that captures one app's audio |
 | `packaging/` | PyInstaller spec, Inno Setup script, release script |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Platforms](docs/PLATFORMS.md) · [Testing](docs/TESTING.md) · [Accounts & SaaS plan](docs/SAAS.md) |

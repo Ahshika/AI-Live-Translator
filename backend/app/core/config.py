@@ -21,7 +21,8 @@ class Settings:
     stt_compute_type: str = "auto"  # auto -> float16 on cuda, int8 on cpu
 
     translation_provider: str = "nllb"
-    translation_model: str = "nllb-200-distilled-1.3B-ct2-int8"  # folder in backend/models
+    # folder in backend/models. "nllb-200-3.3B-ct2-int8" = high quality (needs ~4 GB of GPU memory)
+    translation_model: str = "nllb-200-distilled-1.3B-ct2-int8"
     translation_device: str = "auto"
 
     # Auto-detect fallback: below this confidence we keep the speaker's last confident language.
@@ -31,8 +32,12 @@ class Settings:
     # Preferred voice per language, "lang=voice_id,..." (empty -> best installed voice)
     tts_voices: str = "ar=ar_JO-kareem-medium,de=de_DE-thorsten-high"
     speech_speed: float = 1.0
+    # Names / terms you use ("Ahmed, Siemens, Kubernetes"): recognised and spelled correctly.
+    glossary: str = ""
 
     input_device: str | None = None  # name substring or index; None = system default
+    noise_reduction: str = "light"  # off | light | strong — cleans your mic before recognition
+    auto_gain: bool = True  # raise a quiet microphone automatically
     output_device: str | None = None  # where incoming translations play (headphones)
 
     # Universal mode
@@ -48,6 +53,14 @@ class Settings:
     def preferred_voices(self) -> dict[str, str]:
         pairs = (item.split("=", 1) for item in self.tts_voices.split(",") if "=" in item)
         return {lang.strip(): voice.strip() for lang, voice in pairs}
+
+    def with_voice(self, language: str, voice: str | None) -> "Settings":
+        """A copy where `language` (base code) is spoken by `voice` (None = automatic choice)."""
+        voices = self.preferred_voices()
+        voices.pop(language.split("-")[0], None)
+        if voice:
+            voices[language.split("-")[0]] = voice
+        return self.updated(tts_voices=",".join(f"{k}={v}" for k, v in voices.items()))
 
     @classmethod
     def from_env(cls, **overrides) -> "Settings":
@@ -88,6 +101,8 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "latency_mode": ("fast", "balanced", "accurate"),
     "interruptions": ("smart", "off"),
     "ui_language": ("ar", "en"),
+    "noise_reduction": ("off", "light", "strong"),
+    "translation_model": ("nllb-200-distilled-1.3B-ct2-int8", "nllb-200-3.3B-ct2-int8"),
 }
 RANGES: dict[str, tuple[float, float]] = {
     "speech_speed": (0.5, 2.0),

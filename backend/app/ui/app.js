@@ -24,6 +24,7 @@
     document.title = T("app_name");
     document.querySelectorAll("[data-i18n]").forEach((el) => (el.innerHTML = T(el.dataset.i18n)));
     document.querySelectorAll("[data-i18n-title]").forEach((el) => (el.title = T(el.dataset.i18nTitle)));
+    document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => (el.placeholder = T(el.dataset.i18nPlaceholder)));
     $("btn-lang-ui").textContent = ui === "ar" ? "EN" : "ع";
     render();
   }
@@ -93,6 +94,7 @@
     $("btn-mute").classList.toggle("active", muted);
     $("btn-mute").textContent = T(muted ? "unmute" : "mute");
     $("auto-note").hidden = $("other_language").value !== "auto";
+    $("meters").hidden = !running;
     for (const id of ["btn-copy", "btn-export", "btn-clear-view"]) $(id).disabled = !convo.length;
     for (const id of ["my_language", "other_language", "meeting_app", "btn-swap", "btn-demo"]) $(id).disabled = running || busy;
     const hint = $("hint");
@@ -150,6 +152,15 @@
     t.dir = "auto";
   }
 
+  // Level meter: -60 dBFS (silence) .. 0 dBFS (full scale)
+  function setLevel(ev) {
+    const m = $(ev.direction === "outgoing" ? "meter-outgoing" : "meter-incoming");
+    const pct = Math.max(0, Math.min(100, ((ev.db + 60) / 60) * 100));
+    m.querySelector("i").style.width = pct.toFixed(0) + "%";
+    m.classList.toggle("speaking", !!ev.speaking);
+    m.classList.toggle("clip", !!ev.clipping);
+  }
+
   function conversationText() {
     const lname = (code) => { const l = langInfo(code); return ui === "ar" ? AR_NAMES[l.code] || l.name : l.name; };
     return convo.map((m) => {
@@ -187,6 +198,10 @@
           break;
         case "warning":
           if (ev.code === "device_missing") toast(T("warn_device_missing", ev.device), "warn");
+          else if (ev.code === "mic_quiet") toast(T("warn_mic_quiet"), "warn");
+          break;
+        case "level":
+          setLevel(ev);
           break;
         case "recovered":
           toast(T("recovered"));
@@ -349,7 +364,41 @@
 
   // settings dialog
   const dlg = $("settings");
-  const toggles = ["headphones", "live_subtitles", "hear_my_translation", "save_history"];
+  const toggles = ["headphones", "live_subtitles", "hear_my_translation", "save_history", "auto_gain"];
+
+  // ---------- voices ----------
+  const voiceLabel = (v) => {
+    const bits = [v.name.replace(/_/g, " ")];
+    if (v.gender) bits.push(T(v.gender));
+    if (v.quality) bits.push(T("q_" + v.quality));
+    if (!v.installed) bits.push("⬇ " + T("voice_download", v.size_mb));
+    return bits.join(" · ");
+  };
+  async function loadVoices(sel, label, language) {
+    const l = langInfo(language);
+    label.textContent = T("voice_for", ui === "ar" ? AR_NAMES[l.code] || l.name : l.name);
+    sel.dataset.language = language;
+    sel.innerHTML = "";
+    sel.add(new Option(T("voice_auto"), ""));
+    try {
+      const r = await api(`/api/voices?language=${encodeURIComponent(language)}`);
+      for (const v of r.voices) sel.add(new Option(voiceLabel(v), v.id));
+      sel.value = r.selected && r.voices.some((v) => v.id === r.selected) ? r.selected : "";
+    } catch (e) { /* offline and nothing installed: automatic only */ }
+    sel.dataset.initial = sel.value;
+  }
+  async function preview(sel, btn) {
+    btn.disabled = true;
+    try {
+      await api("/api/voices/preview", { method: "POST", body: JSON.stringify({ language: sel.dataset.language, voice: sel.value || null }) });
+      if (sel.value) { // a downloaded voice is now installed: refresh the label
+        const keep = sel.value; await loadVoices(sel, sel.previousElementSibling, sel.dataset.language); sel.value = keep;
+      }
+    } catch (e) { toast(T("err_voice_preview"), true); }
+    btn.disabled = false;
+  }
+  $("preview-mine").onclick = () => preview($("voice-mine"), $("preview-mine"));
+  $("preview-theirs").onclick = () => preview($("voice-theirs"), $("preview-theirs"));
   $("btn-settings").onclick = async () => {
     const s = state.settings, dev = await api("/api/devices");
     fillDeviceSelect($("input_device"), dev.inputs, s.input_device);
@@ -359,7 +408,14 @@
     $("speed_out").textContent = `×${Number(s.speech_speed).toFixed(2)}`;
     toggles.forEach((k) => ($(k).checked = !!s[k]));
     $("smart_interruptions").checked = s.interruptions !== "off";
+    $("translation_model").value = s.translation_model;
+    $("noise_reduction").value = s.noise_reduction;
+    $("glossary").value = s.glossary || "";
     dlg.showModal();
+    loadVoices($("voice-mine"), $("voice-mine-label"), $("my_language").value);
+    const other = $("other_language").value;
+    $("voice-theirs-row").hidden = other === "auto";
+    if (other !== "auto") loadVoices($("voice-theirs"), $("voice-theirs-label"), other);
   };
   $("speech_speed").oninput = (e) => ($("speed_out").textContent = `×${Number(e.target.value).toFixed(2)}`);
   $("btn-save").onclick = async (e) => {
@@ -368,7 +424,20 @@
       latency_mode: $("latency_mode").value, speech_speed: Number($("speech_speed").value) };
     toggles.forEach((k) => (changes[k] = $(k).checked));
     changes.interruptions = $("smart_interruptions").checked ? "smart" : "off";
-    try { await saveSettings(changes); dlg.close(); toast(T("saved")); } catch {}
+    changes.translation_model = $("translation_model").value;
+    changes.noise_reduction = $("noise_reduction").value;
+    changes.glossary = $("glossary").value.trim();
+    const modelChanged = changes.translation_model !== state.settings.translation_model;
+    try {
+      await saveSettings(changes);
+      for (const sel of [$("voice-mine"), $("voice-theirs")]) {
+        if (sel.dataset.language && sel.value !== sel.dataset.initial && !sel.closest("[hidden]"))
+          state.settings = await api("/api/voices", { method: "PUT", body: JSON.stringify({ language: sel.dataset.language, voice: sel.value || null }) });
+      }
+      dlg.close();
+      toast(T(modelChanged ? "mt_download_needed" : "saved"));
+      if (modelChanged) await checkFirstRun();
+    } catch {}
   };
   $("btn-history").onclick = async () => {
     const rows = await api("/api/history");

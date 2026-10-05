@@ -145,6 +145,40 @@ class PiperProvider(TextToSpeechProvider):
         self._register(self.voices_dir / f"{best['key']}.onnx")
         return best["key"]
 
+    def voice_choices(self, language: str) -> list[dict]:
+        """Installed voices plus (when the list is reachable) the ones that can be downloaded."""
+        base = language.split("-")[0]
+        out = {v.id: {"id": v.id, "name": v.name, "quality": v.quality, "gender": v.gender,
+                      "installed": True, "size_mb": None} for v in self.voices(base)}
+        try:
+            remote = [v for v in self.remote_catalog().values() if v["language"]["family"] == base]
+        except (OSError, ConnectionError):
+            remote = []
+        for v in remote:
+            if v["key"] in out:
+                continue
+            size = sum(f.get("size_bytes", 0) for name, f in v.get("files", {}).items() if name.endswith(".onnx"))
+            out[v["key"]] = {"id": v["key"], "name": v.get("name") or v["key"].split("-")[1],
+                             "quality": v.get("quality"), "gender": _GENDER.get(v.get("name", "")),
+                             "installed": False, "size_mb": round(size / 1e6) or None,
+                             "speakers": v.get("num_speakers", 1)}
+        rank = lambda c: (not c["installed"], _QUALITY_RANK.get(c["quality"] or "", 9), c["id"])  # noqa: E731
+        return sorted(out.values(), key=rank)
+
+    def install_voice(self, voice_id: str, progress=None) -> str:
+        """Download one specific voice (from voice_choices) if it isn't installed yet."""
+        self.load()
+        if voice_id in self._catalog:
+            return voice_id
+        entry = self.remote_catalog().get(voice_id)
+        if entry is None:
+            raise NoVoiceError(f"Unknown voice {voice_id!r}")
+        for rel in entry["files"]:
+            if rel.endswith((".onnx", ".onnx.json")):
+                download(VOICES_URL + rel, self.voices_dir / Path(rel).name, progress=progress)
+        self._register(self.voices_dir / f"{voice_id}.onnx")
+        return voice_id
+
     def _pick(self, language: str, voice: str | None) -> str:
         if voice:
             self.load()

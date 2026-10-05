@@ -89,7 +89,8 @@ def build_voice_translator(settings: Settings, direction: Direction, *, source: 
     hint = settings.other_language if direction == "incoming" and settings.other_language != languages.AUTO else None
     translator = SpeechTranslator(stt, mt, source=langs.source, target=langs.target,
                                   min_confidence=settings.language_min_confidence, source_hint=hint,
-                                  follow_target=follow_target if langs.follows_other else None)
+                                  follow_target=follow_target if langs.follows_other else None,
+                                  glossary=settings.glossary)
     vt = VoiceTranslator(translator, tts, voice=voice,
                          speed=speed if speed is not None else settings.speech_speed)
     vt.speak = has_voice

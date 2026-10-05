@@ -19,6 +19,7 @@ import numpy as np
 from app.core import languages
 from app.pipeline.language import LanguageDecision
 from app.pipeline.speech_translator import SpeechTranslator
+from app.services.audio.enhance import normalize_loudness
 from app.services.audio.format import duration_seconds
 from app.services.stt.base import Transcript
 from app.services.tts.base import AudioChunk, NoVoiceError, TextToSpeechProvider
@@ -61,8 +62,13 @@ class VoiceTranslator:
     def target(self) -> str:
         return self.translator.target
 
-    def process(self, audio: np.ndarray, sink: AudioSink, *, speak: bool = True) -> VoiceResult:
-        """speak=False: translate but don't voice it (backlog / subtitles-only)."""
+    # Every voice (and every sentence) reaches the listener at the same loudness.
+    OUTPUT_DBFS = -18.0
+
+    def process(self, audio: np.ndarray, sink: AudioSink, *, speak: bool = True,
+                speed_factor: float = 1.0) -> VoiceResult:
+        """speak=False: translate but don't voice it (backlog / subtitles-only).
+        speed_factor: talk a little faster to catch up when the conversation runs ahead."""
         t0 = time.perf_counter()
         ms = lambda: (time.perf_counter() - t0) * 1000  # noqa: E731
         target = self.target  # fixed for this utterance even if the followed language changes
@@ -84,7 +90,9 @@ class VoiceTranslator:
                 continue
             try:
                 for chunk in self.tts.synthesize_stream(translated, target, voice=self.voice,
-                                                        speed=self.speed):
+                                                        speed=min(2.0, self.speed * speed_factor)):
+                    chunk = AudioChunk(normalize_loudness(chunk.samples, self.OUTPUT_DBFS, max_gain_db=20.0),
+                                       chunk.sample_rate)
                     if result.first_audio_ms is None:
                         result.first_audio_ms = ms()
                     result.speech_seconds += chunk.seconds

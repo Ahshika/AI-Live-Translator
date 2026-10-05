@@ -170,9 +170,12 @@ class TranslationSession:
                 s.latency_mode, partial_interval_s=1.0 if partials else None))
 
         echo_guard = None if s.headphones else (lambda: self._headphones.queued_seconds > 0)
+        from app.services.audio.enhance import Conditioner
+
         self.outgoing = LiveDirection("outgoing", self._mic, segmenter(), out_vt, self._outgoing_sink,
                                       on_event=self._direction_event, pause_when=echo_guard,
-                                      partials=partials)
+                                      partials=partials,
+                                      conditioner=Conditioner(s.noise_reduction, s.auto_gain))
         self.incoming = LiveDirection("incoming", self._meeting, segmenter(), in_vt, self._headphones.enqueue,
                                       on_event=self._direction_event, partials=partials)
         self.outgoing.start()

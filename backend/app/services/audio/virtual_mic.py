@@ -100,7 +100,7 @@ class VirtualMicrophone:
     def __call__(self, chunk: AudioChunk) -> None:
         self.player.enqueue(chunk)
         if self.monitor is not None:
-            self.monitor.enqueue(AudioChunk(chunk.samples * self.monitor_gain, chunk.sample_rate))
+            self.monitor.enqueue(AudioChunk(chunk.samples * self.monitor_gain, chunk.sample_rate), mix=True)
 
     def stop(self) -> None:
         """Interrupt what's being said (the other person started talking)."""

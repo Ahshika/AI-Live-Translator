@@ -76,6 +76,8 @@ class TranslationSession:
         self.state = "idle"
         self.mic_name_for_meeting: str | None = None
         self._paused = self._mic_muted = False
+        self.echo = None
+        self.speaker_mode = False
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> None:
@@ -109,6 +111,8 @@ class TranslationSession:
         if s.my_language == languages.AUTO:
             raise SessionError("language", "Choose your own language (it can't be Auto)")
         self._paused = self._mic_muted = False
+        self.echo = None
+        self.speaker_mode = False
         self._emit("status", state="loading_models")
         if self._providers is None:
             self._providers = Providers.load(s)
@@ -169,20 +173,48 @@ class TranslationSession:
             return UtteranceSegmenter(vad, SegmenterConfig.for_mode(
                 s.latency_mode, partial_interval_s=1.0 if partials else None))
 
-        echo_guard = None if s.headphones else (lambda: self._headphones.queued_seconds > 0)
+        from app.engine.echo import EchoFilter
+        from app.pipeline.live import ModelGate
         from app.services.audio.enhance import Conditioner
 
+        gate = ModelGate()
+        self.echo = EchoFilter()
+        self.speaker_mode = not s.headphones
         self.outgoing = LiveDirection("outgoing", self._mic, segmenter(), out_vt, self._outgoing_sink,
-                                      on_event=self._direction_event, pause_when=echo_guard,
-                                      partials=partials,
-                                      conditioner=Conditioner(s.noise_reduction, s.auto_gain))
+                                      on_event=self._direction_event, pause_when=self._echo_guard,
+                                      partials=partials, gate=gate,
+                                      conditioner=Conditioner(s.noise_reduction, s.auto_gain),
+                                      sink_backlog=lambda: _queued(self._outgoing_sink))
+        self.outgoing.reject_text = self._is_echo
         self.incoming = LiveDirection("incoming", self._meeting, segmenter(), in_vt, self._headphones.enqueue,
-                                      on_event=self._direction_event, partials=partials)
+                                      on_event=self._direction_event, partials=partials, gate=gate,
+                                      sink_backlog=lambda: _queued(self._headphones))
         self.outgoing.start()
         self.incoming.start()
         self._emit("ready", mic_for_meeting=self.mic_name_for_meeting,
                    outgoing_voice=out_vt.speak, incoming_voice=in_vt.speak,
                    my_language=s.my_language, other_language=s.other_language)
+
+    # -- echo (speakers instead of a headset) -----------------------------------------
+    ECHOES_FOR_SPEAKER_MODE = 2
+
+    def _echo_guard(self) -> bool:
+        """In speaker mode, don't listen to the mic while the room is full of other audio:
+        a translation playing for you, or the meeting itself talking."""
+        if not self.speaker_mode:
+            return False
+        playing = _queued(self._headphones) > 0
+        meeting = self.incoming is not None and self.incoming.segmenter.in_speech
+        return playing or meeting
+
+    def _is_echo(self, text: str) -> bool:
+        if not self.echo.is_echo(text):
+            return False
+        log.info("dropped an echo from the microphone: %r", text)
+        if not self.speaker_mode and self.echo.hits >= self.ECHOES_FOR_SPEAKER_MODE:
+            self.speaker_mode = True  # they're on speakers whatever the setting says
+            self._emit("warning", code="echo_detected")
+        return True
 
     def _open_with_fallback(self, setting: str, open_device: Callable[[Any], Any], name: str | None):
         """Open the device chosen in Settings; if it's gone (unplugged headset, renamed driver),
@@ -269,6 +301,8 @@ class TranslationSession:
         if kind == "final":
             if direction == "outgoing":
                 self._headphones.unduck()
+            elif self.echo is not None:  # what the room just heard: a mic repeating it soon is an echo
+                self.echo.heard(event.get("source_text", ""), event.get("translated_text", ""))
             with self._lock:
                 msg = Message(self._next_id, "me" if direction == "outgoing" else "other",
                               event["source_language"], event["source_text"], event["target_language"],
@@ -291,6 +325,13 @@ class TranslationSession:
             self._on_event(event)
         except Exception:
             log.exception("session event callback failed")
+
+
+def _queued(sink) -> float:
+    """Seconds of speech a sink still has to play (0 if it can't tell)."""
+    player = getattr(sink, "player", sink)
+    value = getattr(player, "queued_seconds", 0.0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
 
 
 def _as_session_error(exc: Exception) -> SessionError:

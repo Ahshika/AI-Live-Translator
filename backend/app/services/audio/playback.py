@@ -41,6 +41,10 @@ class AudioPlayer:
             self.channels = max(1, min(device.max_output_channels, 2))
         self._buffers: deque[np.ndarray] = deque()
         self._offset = 0
+        # A second lane that is MIXED over the main one instead of queued behind it (the quiet
+        # monitor of your own translation must never delay the translation meant for you).
+        self._mix: deque[np.ndarray] = deque()
+        self._mix_offset = 0
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
@@ -71,11 +75,14 @@ class AudioPlayer:
         self.close()
 
     # -- producer side -------------------------------------------------------
-    def enqueue(self, chunk: AudioChunk) -> None:
+    def enqueue(self, chunk: AudioChunk, *, mix: bool = False) -> None:
         samples = resample(chunk.samples, chunk.sample_rate, self.rate)
         if samples.size == 0:
             return
         with self._lock:
+            if mix:
+                self._mix.append(samples)
+                return
             self._buffers.append(samples)
             self._idle.clear()
 
@@ -89,6 +96,8 @@ class AudioPlayer:
                 self._buffers.clear()
                 self._buffers.append(head)
                 self._offset = 0
+            self._mix.clear()
+            self._mix_offset = 0
 
     def duck(self, gain: float = 0.3) -> None:
         self.gain = gain
@@ -121,8 +130,18 @@ class AudioPlayer:
                     self._offset = 0
             if not self._buffers:
                 self._idle.set()
-        if filled < frames:
-            out[filled:] = 0.0
+            if filled < frames:
+                out[filled:] = 0.0
+            done = 0
+            while done < frames and self._mix:
+                buf = self._mix[0]
+                n = min(frames - done, len(buf) - self._mix_offset)
+                out[done:done + n] += buf[self._mix_offset:self._mix_offset + n]
+                done += n
+                self._mix_offset += n
+                if self._mix_offset >= len(buf):
+                    self._mix.popleft()
+                    self._mix_offset = 0
         if self.gain != 1.0:
             out *= self.gain
         if outdata.shape[1] > 1:

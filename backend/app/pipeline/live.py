@@ -47,6 +47,30 @@ class _Utterance:
     cancelled: bool = False
 
 
+class ModelGate:
+    """Shared by both directions: real translations always go before live subtitles.
+
+    Both directions use the same speech model (one at a time). Without this, the meeting
+    side's subtitle refresh could hold the model while your finished sentence waits.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._finals = 0
+
+    def add(self, n: int = 1) -> None:
+        with self._lock:
+            self._finals += n
+
+    def done(self) -> None:
+        with self._lock:
+            self._finals = max(0, self._finals - 1)
+
+    @property
+    def finals_waiting(self) -> bool:
+        return self._finals > 0
+
+
 class LiveDirection:
     MAX_PENDING = 2
     RECOVER_AFTER_S = (1, 2, 5, 10)  # back-off between attempts to reopen a failed audio source
@@ -54,8 +78,13 @@ class LiveDirection:
     def __init__(self, name: str, source: AudioSource, segmenter: UtteranceSegmenter,
                  translator: VoiceTranslator, sink: AudioSink, *, on_event: EventCallback | None = None,
                  pause_when: Callable[[], bool] | None = None, partials: bool = True,
-                 conditioner: Any = None):
-        """conditioner: optional mic clean-up (app.services.audio.enhance.Conditioner)."""
+                 conditioner: Any = None, gate: ModelGate | None = None,
+                 sink_backlog: Callable[[], float] | None = None):
+        """conditioner: optional mic clean-up (app.services.audio.enhance.Conditioner).
+        gate: shared with the other direction so finals win the model over subtitles.
+        sink_backlog: seconds of translated speech still waiting to be played."""
+        self.gate = gate or ModelGate()
+        self.sink_backlog = sink_backlog
         self.name, self.source, self.segmenter = name, source, segmenter
         self.translator, self.sink = translator, sink
         self.on_event = on_event or (lambda e: None)
@@ -172,7 +201,7 @@ class LiveDirection:
                 self._partial_slot = None
                 # The speaker actually stopped end_silence_ms ago (that's how we knew):
                 # measure latency from there, i.e. what the listener really waits.
-                waited = 0 if ev.forced else self.segmenter.cfg.end_silence_ms / 1000
+                waited = 0 if ev.forced else ev.silence_ms / 1000
                 self._enqueue(_Utterance(self._prepare(ev.audio), time.perf_counter() - waited, ev.forced))
 
     QUIET_DBFS = -45.0
@@ -215,6 +244,7 @@ class LiveDirection:
                 waiting[0].speak = False  # too far behind: oldest becomes subtitles only
                 self.stats["dropped_to_text"] += 1
             self._pending.append(utt)
+        self.gate.add()
         self._queue.put(utt)
 
     def _worker_loop(self) -> None:
@@ -226,6 +256,7 @@ class LiveDirection:
                 if utt in self._pending:
                     self._pending.remove(utt)
             if utt.cancelled:
+                self.gate.done()
                 continue
             self._busy.set()
             try:
@@ -236,6 +267,7 @@ class LiveDirection:
                 self._emit("error", code="pipeline", message=str(exc))
             finally:
                 self._busy.clear()
+                self.gate.done()
 
     def _translate(self, utt: _Utterance) -> None:
         first_audio: list[float] = []
@@ -245,14 +277,19 @@ class LiveDirection:
                 first_audio.append(time.perf_counter())
             self.sink(chunk)
 
-        with self._pending_lock:  # someone is already waiting: catch up a little
-            behind = any(u.speak and not u.cancelled for u in self._pending)
-        r = self.translator.process(utt.audio, sink, speak=utt.speak,
-                                    speed_factor=self.CATCH_UP_SPEED if behind else 1.0)
+        speak, speed = self._catch_up(utt)
+        r = self.translator.process(utt.audio, sink, speak=speak, speed_factor=speed,
+                                    reject=self.reject_text)
         if r.skipped:
+            if r.rejected:
+                self._emit("echo_dropped", text=r.transcript.text)
             return
         self.stats["utterances"] += 1
         latency = (first_audio[0] - utt.ended_at) * 1000 if first_audio else None
+        log.info("%s: %.1fs speech -> stt %.0f ms, first audio %s ms after they stopped, total %.0f ms%s",
+                 self.name, len(utt.audio) / 16_000, r.stt_ms,
+                 f"{latency:.0f}" if latency is not None else "-", r.total_ms,
+                 "" if speak else " (text only: running behind)")
         self._emit("final", source_language=r.language.code, target_language=r.target_language,
                    source_text=r.transcript.text, translated_text=r.translated_text,
                    spoken=bool(first_audio), text_only=r.text_only or not utt.speak,
@@ -267,7 +304,7 @@ class LiveDirection:
             self._partial_event.wait(timeout=0.5)
             self._partial_event.clear()
             audio = self._partial_slot
-            if audio is None or self._busy.is_set():  # finals always win the GPU
+            if audio is None or self.gate.finals_waiting:  # finals (either side) win the model
                 continue
             try:
                 if self.conditioner is not None:
@@ -277,6 +314,29 @@ class LiveDirection:
                 continue
             if t.text and self._partial_slot is not None:
                 self._emit("partial", text=t.text)
+
+    # Translated speech already waiting to be played. Beyond these, we catch up first by
+    # talking faster, then by showing a sentence as text instead of piling up audio — the
+    # listener should never hear translations seconds after the conversation moved on.
+    FASTER_AFTER_S = 2.5
+    TEXT_ONLY_AFTER_S = 8.0
+    reject_text: Callable[[str], bool] | None = None  # e.g. echo filter (set by the session)
+
+    def _catch_up(self, utt: _Utterance) -> tuple[bool, float]:
+        with self._pending_lock:
+            waiting = any(u.speak and not u.cancelled for u in self._pending)
+        backlog = 0.0
+        if self.sink_backlog is not None:
+            try:
+                backlog = float(self.sink_backlog())
+            except Exception:
+                backlog = 0.0
+        if backlog > self.TEXT_ONLY_AFTER_S:
+            self.stats["dropped_to_text"] += 1
+            return False, 1.0
+        if backlog > self.FASTER_AFTER_S:
+            return utt.speak, 1.25
+        return utt.speak, self.CATCH_UP_SPEED if waiting else 1.0
 
     def _emit(self, kind: str, **data) -> None:
         try:

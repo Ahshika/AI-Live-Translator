@@ -133,6 +133,7 @@
       <div class="meta">${[lat, m.same_language ? T("same_language") : ""].filter(Boolean).join(" · ")}</div>`;
     div.querySelector(".orig").textContent = m.source_text;
     div.querySelector(".tr").textContent = m.translated_text;
+    if (m.stt_ms != null) div.querySelector(".meta").title = T("timing", (m.stt_ms / 1000).toFixed(1), (m.total_ms / 1000).toFixed(1));
     // Stay at the bottom only if the user hasn't scrolled up to re-read something.
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     box.appendChild(div);
@@ -199,6 +200,7 @@
         case "warning":
           if (ev.code === "device_missing") toast(T("warn_device_missing", ev.device), "warn");
           else if (ev.code === "mic_quiet") toast(T("warn_mic_quiet"), "warn");
+          else if (ev.code === "echo_detected") toast(T("warn_echo_detected"), "warn");
           break;
         case "level":
           setLevel(ev);
@@ -215,7 +217,7 @@
           break;
         case "final":
           setLive(ev.direction, "");
-          if (ev.message) addMessage(ev.message);
+          if (ev.message) addMessage({ ...ev.message, stt_ms: ev.stt_ms, total_ms: ev.total_ms });
           break;
         case "setup_progress":
           onSetupProgress(ev);

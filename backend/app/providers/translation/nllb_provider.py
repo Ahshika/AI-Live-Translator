@@ -81,7 +81,7 @@ class NLLBProvider(TranslationProvider):
             results = self._translator.translate_batch(
                 batch,
                 target_prefix=[[tgt]] * len(batch),
-                beam_size=self.beam_size,
+                beam_size=self.beam_size if self.device != "cpu" else min(self.beam_size, 2),
                 max_decoding_length=max(len(b) for b in batch) * 2 + 16,
                 repetition_penalty=1.1,  # NLLB sometimes loops on short/noisy STT input
                 no_repeat_ngram_size=4,  # ...and repeats whole phrases ("we go we go we go")

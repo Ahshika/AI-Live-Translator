@@ -49,7 +49,7 @@ window.I18N = {
     meter_me: "ميكروفوني", meter_them: "صوت الاجتماع",
     sec_quality: "جودة الترجمة والميكروفون", translation_model: "نموذج الترجمة",
     mt_standard: "عادي (أسرع، ١٫٤ جيجا)", mt_high: "عالي الجودة (٣٫٤ جيجا، يحتاج كرت شاشة)",
-    noise_reduction: "تنقية الميكروفون من الضوضاء", nr_off: "بدون", nr_light: "خفيفة (يُنصح بها)", nr_strong: "قوية (مكان فيه دوشة)",
+    noise_reduction: "تنقية الميكروفون من الضوضاء", nr_off: "بدون (يُنصح بها)", nr_light: "خفيفة (مكان فيه دوشة بسيطة)", nr_strong: "قوية (مكان فيه دوشة عالية)",
     glossary: "أسماء وكلمات خاصة بك (حتى تُفهم وتُكتب صح)", glossary_ph: "أحمد، شركة سيمنس، Kubernetes، مشروع ألفا",
     sec_voices: "صوت الترجمة", preview: "▶ اسمع", voice_auto: "تلقائي (أفضل صوت متاح)",
     voice_for: (l) => `بلغة ${l}:`, voice_download: (mb) => `تنزيل ${mb ? mb + " ميجا" : ""}`.trim(),
@@ -58,6 +58,8 @@ window.I18N = {
     warn_mic_quiet: "صوت ميكروفونك منخفض جدًا — قرّبه منك أو ارفع مستواه من إعدادات الصوت في ويندوز.",
     err_voice_preview: "تعذّر تشغيل الصوت (ربما يحتاج إنترنت لتنزيله أول مرة).",
     mt_download_needed: "النموذج الجديد يحتاج تنزيل مرة واحدة.",
+    warn_echo_detected: "الميكروفون بيلقط صوت السماعات (صدى). وقفنا الاستماع لمايكك وقت ما فيه صوت شغّال — استخدم سماعة رأس لأفضل نتيجة.",
+    timing: (stt, total) => `فهم الكلام ${stt} ث · المعالجة كلها ${total} ث`,
   },
   en: {
     app_name: "Live Translator", settings: "Settings", swap: "Swap",
@@ -108,7 +110,7 @@ window.I18N = {
     meter_me: "My mic", meter_them: "Meeting audio",
     sec_quality: "Translation & microphone quality", translation_model: "Translation model",
     mt_standard: "Standard (faster, 1.4 GB)", mt_high: "High quality (3.4 GB, needs a GPU)",
-    noise_reduction: "Microphone noise reduction", nr_off: "Off", nr_light: "Light (recommended)", nr_strong: "Strong (noisy room)",
+    noise_reduction: "Microphone noise reduction", nr_off: "Off (recommended)", nr_light: "Light (some background noise)", nr_strong: "Strong (very noisy room)",
     glossary: "Your names & terms (recognised and spelled correctly)", glossary_ph: "Ahmed, Siemens, Kubernetes, Project Alpha",
     sec_voices: "Translation voice", preview: "▶ Listen", voice_auto: "Automatic (best available voice)",
     voice_for: (l) => `${l}:`, voice_download: (mb) => `download ${mb ? mb + " MB" : ""}`.trim(),
@@ -117,6 +119,8 @@ window.I18N = {
     warn_mic_quiet: "Your microphone is very quiet — move it closer or raise its level in Windows sound settings.",
     err_voice_preview: "Couldn't play the voice (it may need internet to download the first time).",
     mt_download_needed: "The new model needs a one-time download.",
+    warn_echo_detected: "Your mic is picking up your speakers (echo). We now ignore the mic while audio is playing — use a headset for the best result.",
+    timing: (stt, total) => `speech recognition ${stt} s · whole processing ${total} s`,
   },
 };
 

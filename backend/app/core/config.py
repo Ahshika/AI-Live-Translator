@@ -36,8 +36,11 @@ class Settings:
     glossary: str = ""
 
     input_device: str | None = None  # name substring or index; None = system default
-    noise_reduction: str = "light"  # off | light | strong — cleans your mic before recognition
-    auto_gain: bool = True  # raise a quiet microphone automatically
+    # Off by default: Whisper is trained on noisy speech and copes well; denoising helps a
+    # really noisy room but can cost accuracy on a normal one. Auto-gain can also lift room
+    # noise until the speech detector fires on it, so it's for genuinely quiet mics only.
+    noise_reduction: str = "off"  # off | light | strong — cleans your mic before recognition
+    auto_gain: bool = False  # raise a quiet microphone automatically
     output_device: str | None = None  # where incoming translations play (headphones)
 
     # Universal mode

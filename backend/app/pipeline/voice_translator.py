@@ -41,6 +41,7 @@ class VoiceResult:
     total_ms: float = 0.0
     text_only: bool = False  # no voice for the target language -> subtitles only
     same_language: bool = False  # spoken in the listener's own language: shown, not re-spoken
+    rejected: bool = False  # e.g. the mic only heard an echo of the meeting: dropped
 
     @property
     def translated_text(self) -> str:
@@ -48,7 +49,7 @@ class VoiceResult:
 
     @property
     def skipped(self) -> bool:
-        return self.transcript.is_empty
+        return self.transcript.is_empty or self.rejected
 
 
 class VoiceTranslator:
@@ -66,7 +67,7 @@ class VoiceTranslator:
     OUTPUT_DBFS = -18.0
 
     def process(self, audio: np.ndarray, sink: AudioSink, *, speak: bool = True,
-                speed_factor: float = 1.0) -> VoiceResult:
+                speed_factor: float = 1.0, reject=None) -> VoiceResult:
         """speak=False: translate but don't voice it (backlog / subtitles-only).
         speed_factor: talk a little faster to catch up when the conversation runs ahead."""
         t0 = time.perf_counter()
@@ -75,7 +76,8 @@ class VoiceTranslator:
         transcript, decision = self.translator.transcribe(audio)
         result = VoiceResult(transcript, decision, target,
                              audio_seconds=duration_seconds(audio), stt_ms=ms())
-        if transcript.is_empty:
+        if transcript.is_empty or (reject is not None and reject(transcript.text)):
+            result.rejected = not transcript.is_empty
             result.total_ms = ms()
             return result
         # They spoke the listener's own language (common with auto-detect in group calls): the

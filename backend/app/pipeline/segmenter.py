@@ -41,6 +41,7 @@ class UtteranceEnded:
     audio: np.ndarray
     t: float
     forced: bool = False
+    silence_ms: float = 0.0  # how long we waited after the last word before closing it
 
 
 SegmentEvent = Union[SpeechStarted, PartialAudio, UtteranceEnded]
@@ -59,9 +60,20 @@ class SegmenterConfig:
     min_speech_ms: int = 160
     end_silence_ms: int = 600
     pre_roll_ms: int = 300
-    max_utterance_s: float = 15.0
+    # A speaker who never pauses long must still be translated within seconds: cut by then.
+    max_utterance_s: float = 9.0
     min_utterance_ms: int = 300  # shorter blips (coughs, clicks) are dropped
     partial_interval_s: float | None = 1.0  # None = no partials
+    # The longer someone has been talking, the shorter the pause that ends the sentence:
+    # after a few seconds a breath (~250 ms) is a fine place to start translating.
+    adaptive_end: bool = True
+    min_end_silence_ms: int = 250
+
+    def end_silence_for(self, speech_s: float) -> float:
+        if not self.adaptive_end or speech_s < 3.0:
+            return self.end_silence_ms
+        factor = 0.5 if speech_s < 6.0 else 0.4
+        return max(self.min_end_silence_ms, self.end_silence_ms * factor)
 
     @classmethod
     def for_mode(cls, mode: str, **kw) -> "SegmenterConfig":
@@ -128,11 +140,13 @@ class UtteranceSegmenter:
         self._speech.append(window)
         self._win_energy.append(float(np.mean(window * window)))
         self._silent_run = self._silent_run + 1 if prob < self.cfg.end_threshold else 0
-        if self._silent_run * self._ms_per_win >= self.cfg.end_silence_ms:
+        voiced_s = (len(self._speech) - self._silent_run) * self.win / SAMPLE_RATE
+        silence_ms = self._silent_run * self._ms_per_win
+        if silence_ms >= self.cfg.end_silence_for(voiced_s):
             # Drop most of the trailing silence; keep a little so the last word isn't cut.
             keep = len(self._speech) - self._silent_run + max(1, int(150 / self._ms_per_win))
             self._speech = self._speech[:keep]
-            return self._close()
+            return self._close(silence_ms=silence_ms)
         if len(self._speech) * self.win >= self.cfg.max_utterance_s * SAMPLE_RATE:
             return self._force_cut()
         if self.cfg.partial_interval_s and self._silent_run == 0:  # no partials during pauses
@@ -142,13 +156,13 @@ class UtteranceSegmenter:
                 return [PartialAudio(np.concatenate(self._speech), self._now())]
         return []
 
-    def _close(self, forced: bool = False) -> list[SegmentEvent]:
+    def _close(self, forced: bool = False, silence_ms: float = 0.0) -> list[SegmentEvent]:
         audio = np.concatenate(self._speech) if self._speech else np.zeros(0, np.float32)
         self._in_speech, self._speech, self._win_energy = False, [], []
         self._voiced_run = self._silent_run = 0
         if len(audio) < self.cfg.min_utterance_ms * SAMPLE_RATE / 1000:
             return []
-        return [UtteranceEnded(audio, self._now(), forced)]
+        return [UtteranceEnded(audio, self._now(), forced, silence_ms)]
 
     def _force_cut(self) -> list[SegmentEvent]:
         # Cut at the quietest window in the last ~2 s so we don't split a word.

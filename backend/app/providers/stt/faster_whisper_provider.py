@@ -116,7 +116,9 @@ class FasterWhisperProvider(SpeechToTextProvider):
             segments, info = self._model.transcribe(
                 audio,
                 language=language,
-                beam_size=1 if fast else 5,
+                # On a CPU, beam search costs 2-4x the time for a small accuracy gain: in a live
+                # call a fast answer beats a perfect one that arrives after they moved on.
+                beam_size=1 if fast or self.device == "cpu" else 5,
                 vad_filter=False,  # VAD is our own pipeline stage (Phase 6)
                 condition_on_previous_text=False,  # avoids hallucination loops on short clips
                 without_timestamps=False,

@@ -38,6 +38,10 @@ class HistoryStore:
         self._conn: sqlite3.Connection | None = None
         self._session_started = time.time()
 
+    def new_session(self) -> None:
+        """Messages saved from now on belong to a new conversation."""
+        self._session_started = time.time()
+
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)

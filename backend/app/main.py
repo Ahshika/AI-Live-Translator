@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core import languages
-from app.core.config import Settings
+from app.core.config import InvalidSettingError, Settings
 from app.engine import doctor
 from app.engine.history import HistoryStore
 from app.engine.session import SessionError, TranslationSession
@@ -61,7 +61,7 @@ class Engine:
             return
         data = json.dumps(event, ensure_ascii=False, default=str)
         for q in list(self._clients):
-            self._loop.call_soon_threadsafe(q.put_nowait, data)
+            self._loop.call_soon_threadsafe(_offer, q, data)
 
     # -- session control -----------------------------------------------------
     def start(self, demo: bool = False) -> None:
@@ -71,7 +71,13 @@ class Engine:
             self.last_error = None
             if self.providers is None:
                 self.publish({"type": "status", "state": "loading_models"})
-                self.providers = Providers.load(self.settings)
+                try:
+                    self.providers = Providers.load(self.settings)
+                except Exception as exc:
+                    log.exception("loading models failed")
+                    self.publish({"type": "status", "state": "idle"})
+                    raise SessionError("models", str(exc)) from exc
+            self.history.new_session()
             if demo:
                 self.session = self._demo_session()
             else:
@@ -121,9 +127,20 @@ class Engine:
             "state": s.state if s else "idle",
             "settings": self.settings.to_dict(),
             "mic_for_meeting": s.mic_name_for_meeting if s else None,
+            "mic_muted": bool(s and s.mic_muted),
             "conversation": [m.__dict__ for m in s.history] if s else [],
             "last_error": self.last_error,
         }
+
+
+def _offer(q: asyncio.Queue, data: str) -> None:
+    """Deliver to one UI; a client that stopped reading loses its oldest events, not the engine."""
+    if q.full():
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+    q.put_nowait(data)
 
 
 def _without_virtual_devices(settings: Settings) -> Settings:
@@ -239,9 +256,14 @@ def create_app(engine: Engine | None = None, token: str | None = None) -> FastAP
         for key in ("my_language", "other_language"):
             if key in body and body[key] != languages.AUTO and body[key] not in languages.LANGUAGES:
                 raise HTTPException(400, f"unknown language {body[key]!r}")
-        if engine.session and engine.session.state in ("running", "paused"):
+        if body.get("my_language") == languages.AUTO:
+            raise HTTPException(400, "your own language can't be auto")
+        if engine.session and engine.session.state in ("starting", "running", "paused"):
             raise HTTPException(409, "stop translation before changing settings")
-        return engine.update_settings(body).to_dict()
+        try:
+            return engine.update_settings(body).to_dict()
+        except InvalidSettingError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.post("/api/session/{action}", dependencies=[Depends(auth)])
     async def session_action(action: str, speaker: str = Query("other")):
@@ -256,7 +278,7 @@ def create_app(engine: Engine | None = None, token: str | None = None) -> FastAP
                 s.set_paused(action == "pause")
             elif action in ("mute", "unmute") and s:
                 s.set_mic_muted(action == "mute")
-            elif action == "replay" and s:
+            elif action == "replay" and s and speaker in ("me", "other"):
                 ok = await loop.run_in_executor(None, s.replay_last, speaker)
                 return {"ok": ok}
             else:

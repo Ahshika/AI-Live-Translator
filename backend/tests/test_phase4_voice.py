@@ -100,4 +100,4 @@ def test_missing_voice_falls_back_to_subtitles():
     vt = VoiceTranslator(st, NoVoiceTTS())
     got = []
     r = vt.process(np.zeros(16_000, np.float32), got.append)
-    assert r.text_only and got == [] and len(r.pairs) == 2 and vt.speak is False
+    assert r.text_only and got == [] and len(r.pairs) == 2 and vt.voiceless == {"de"}

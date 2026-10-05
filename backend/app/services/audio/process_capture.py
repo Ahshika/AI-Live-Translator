@@ -109,6 +109,8 @@ def find_app_root(app: str, processes: list[ProcessInfo] | None = None) -> Proce
 
 
 def running_meeting_apps() -> list[str]:
+    if sys.platform != "win32":  # process discovery uses the Windows Toolhelp API
+        return []
     procs = list_processes()
     return [name for name in KNOWN_APPS if find_app_root(name, procs)]
 

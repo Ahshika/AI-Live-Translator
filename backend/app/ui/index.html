@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>المترجم الفوري</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
@@ -50,12 +51,14 @@
         <select id="meeting_app"></select>
       </label>
 
-      <button id="btn-start" class="start">
+      <div id="auto-note" class="note" data-i18n="auto_note" hidden></div>
+
+      <button id="btn-start" class="start" data-i18n-title="kb_start">
         <span class="dot"></span><span id="start-text" data-i18n="start">ابدأ الترجمة</span>
       </button>
 
       <div class="row-buttons">
-        <button id="btn-mute" class="chip" disabled data-i18n="mute">كتم الميكروفون</button>
+        <button id="btn-mute" class="chip" disabled data-i18n="mute" data-i18n-title="kb_mute">كتم الميكروفون</button>
         <button id="btn-pause" class="chip" disabled data-i18n="pause">إيقاف مؤقت</button>
         <button id="btn-replay" class="chip" disabled data-i18n="replay">إعادة آخر ترجمة</button>
       </div>
@@ -68,14 +71,20 @@
     <section class="panel convo">
       <div class="convo-head">
         <h2 data-i18n="conversation">المحادثة</h2>
+        <span id="avg-latency" class="stat" hidden></span>
         <label class="toggle"><input type="checkbox" id="show_original" checked><span data-i18n="show_original">إظهار النص الأصلي</span></label>
+      </div>
+      <div class="convo-tools">
+        <button type="button" class="chip" id="btn-copy" data-i18n="copy" disabled>نسخ المحادثة</button>
+        <button type="button" class="chip" id="btn-export" data-i18n="export" disabled>حفظ كملف نصي</button>
+        <button type="button" class="chip" id="btn-clear-view" data-i18n="clear_view" disabled>مسح الشاشة</button>
       </div>
       <div id="messages" class="messages" aria-live="polite">
         <div class="empty" id="empty" data-i18n="empty">اضغط «ابدأ الترجمة» ثم تكلم بشكل طبيعي. ستظهر المحادثة هنا.</div>
       </div>
       <div class="live">
-        <div class="live-line me" id="live-me" hidden></div>
-        <div class="live-line other" id="live-other" hidden></div>
+        <div class="live-line me" id="live-me" hidden><b class="speaker"></b><span class="text"></span></div>
+        <div class="live-line other" id="live-other" hidden><b class="speaker"></b><span class="text"></span></div>
       </div>
     </section>
   </main>
@@ -98,6 +107,7 @@
       <div class="toggles">
         <label class="toggle"><input type="checkbox" id="headphones"><span data-i18n="headphones">أستخدم سماعة رأس (يمنع الصدى)</span></label>
         <label class="toggle"><input type="checkbox" id="live_subtitles"><span data-i18n="live_subtitles">ترجمة نصية أثناء الكلام</span></label>
+        <label class="toggle"><input type="checkbox" id="smart_interruptions"><span data-i18n="interruptions">مقاطعة ذكية (أوقف ترجمتي لو الطرف الآخر بدأ يتكلم)</span></label>
         <label class="toggle"><input type="checkbox" id="hear_my_translation"><span data-i18n="hear_mine">اسمع ترجمتي بصوت منخفض</span></label>
         <label class="toggle"><input type="checkbox" id="save_history"><span data-i18n="save_history">حفظ سجل المحادثات (نص فقط، على جهازي)</span></label>
       </div>
@@ -106,6 +116,7 @@
         <button type="button" class="chip danger" id="btn-clear-history" data-i18n="clear_history">مسح السجل</button>
         <button type="button" class="chip" id="btn-doctor" data-i18n="check_setup">فحص الإعداد</button>
       </div>
+      <p class="privacy" data-i18n="shortcuts">⌨️ اختصارات: Ctrl+Enter تشغيل/إيقاف · Ctrl+M كتم الميكروفون · Ctrl+R إعادة آخر ترجمة</p>
       <p class="privacy" data-i18n="privacy">🔒 كل شيء يعمل على جهازك. لا يُرسل صوتك لأي خادم، ولا يُحفظ الصوت أبدًا.</p>
       <footer><button class="primary" id="btn-save" value="save" data-i18n="save">حفظ</button></footer>
     </form>

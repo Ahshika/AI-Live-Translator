@@ -46,6 +46,7 @@ class Message:
     timestamp: float
     latency_ms: float | None
     spoken: bool
+    same_language: bool = False  # they spoke the listener's own language: shown, not re-spoken
 
 
 class SessionError(RuntimeError):
@@ -74,6 +75,7 @@ class TranslationSession:
         self._lock = threading.Lock()
         self.state = "idle"
         self.mic_name_for_meeting: str | None = None
+        self._paused = self._mic_muted = False
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> None:
@@ -82,23 +84,39 @@ class TranslationSession:
         self._set_state("starting")
         try:
             self._start()
-        except Exception:
-            self._set_state("idle")
-            self._close_devices()
+        except SessionError:
+            self._abort_start()
             raise
+        except Exception as exc:
+            self._abort_start()
+            raise _as_session_error(exc) from exc
         self._set_state("running")
+
+    def _abort_start(self) -> None:
+        """A half-started session must not keep the mic / meeting capture / threads running."""
+        for d in (self.outgoing, self.incoming):
+            if d is not None:
+                try:
+                    d.stop()
+                except Exception:
+                    log.exception("stopping direction failed")
+        self.outgoing = self.incoming = None
+        self._close_devices()
+        self._set_state("idle")
 
     def _start(self) -> None:
         s = self.settings
         if s.my_language == languages.AUTO:
             raise SessionError("language", "Choose your own language (it can't be Auto)")
+        self._paused = self._mic_muted = False
         self._emit("status", state="loading_models")
         if self._providers is None:
             self._providers = Providers.load(s)
 
         # Devices (lazy imports keep tests free of real hardware)
         if self._headphones is None:
-            self._headphones = AudioPlayer(s.output_device)
+            self._headphones = self._open_with_fallback(
+                "output_device", lambda dev: AudioPlayer(dev), s.output_device)
         self._headphones.start()
         if self._outgoing_sink is None:
             from app.services.audio.virtual_mic import VirtualMicrophone, VirtualMicUnavailableError
@@ -114,13 +132,14 @@ class TranslationSession:
         if self._mic is None:
             from app.services.audio.capture import MicrophoneCapture
             from app.services.audio.devices import find_device
-
             from app.services.audio.virtual_mic import is_virtual_device
 
             if s.input_device and is_virtual_device(s.input_device):
                 raise SessionError("mic_is_virtual",
                                    "The virtual cable can't be your microphone — choose your real mic in Settings")
-            self._mic = MicrophoneCapture(device=find_device(s.input_device) if s.input_device else None)
+            self._mic = self._open_with_fallback(
+                "input_device", lambda dev: MicrophoneCapture(device=find_device(dev) if dev else None),
+                s.input_device)
         if self._meeting is None:
             from app.services.audio.process_capture import MeetingAudioUnavailableError, ProcessAudioCapture
 
@@ -134,8 +153,11 @@ class TranslationSession:
         # Live subtitles re-run speech recognition every second: fine on a GPU, but on a CPU
         # they'd steal the time the real translation needs.
         partials = s.live_subtitles and getattr(self._providers.stt, "device", "cuda") != "cpu"
-        out_vt = build_voice_translator(s, "outgoing", providers=self._providers)
         in_vt = build_voice_translator(s, "incoming", providers=self._providers)
+        # "Other language = auto": my words go out in whatever language they were last heard
+        # speaking (English until then), so a group call can switch languages on its own.
+        out_vt = build_voice_translator(s, "outgoing", providers=self._providers,
+                                        follow_target=lambda: in_vt.translator.resolver.last_confident)
 
         def segmenter() -> UtteranceSegmenter:
             if self._vad_factory:
@@ -159,6 +181,17 @@ class TranslationSession:
                    outgoing_voice=out_vt.speak, incoming_voice=in_vt.speak,
                    my_language=s.my_language, other_language=s.other_language)
 
+    def _open_with_fallback(self, setting: str, open_device: Callable[[Any], Any], name: str | None):
+        """Open the device chosen in Settings; if it's gone (unplugged headset, renamed driver),
+        use Windows' default instead of refusing to start, and tell the user."""
+        if name:
+            try:
+                return open_device(name)
+            except LookupError as exc:
+                log.warning("%s %r unavailable (%s); using the system default", setting, name, exc)
+                self._emit("warning", code="device_missing", setting=setting, device=name)
+        return open_device(None)
+
     def stop(self) -> None:
         if self.state == "idle":
             return
@@ -180,16 +213,29 @@ class TranslationSession:
                     log.exception("closing device failed")
 
     # -- controls ------------------------------------------------------------
+    @property
+    def mic_muted(self) -> bool:
+        return self._mic_muted
+
     def set_mic_muted(self, muted: bool) -> None:
-        if self.outgoing:
-            self.outgoing.muted = muted
+        self._mic_muted = muted
+        self._apply_mutes()
+        self._emit("mic", muted=muted)
 
     def set_paused(self, paused: bool) -> None:
-        """Pause = stop translating in both directions (streams stay open; instant resume)."""
-        for d in (self.outgoing, self.incoming):
-            if d:
-                d.muted = paused
+        """Pause = stop translating in both directions (streams stay open; instant resume).
+        Resuming never un-mutes a mic the user muted on purpose."""
+        if self.state not in ("running", "paused"):
+            return
+        self._paused = paused
+        self._apply_mutes()
         self._set_state("paused" if paused else "running")
+
+    def _apply_mutes(self) -> None:
+        if self.outgoing and self.outgoing.muted != (self._paused or self._mic_muted):
+            self.outgoing.muted = self._paused or self._mic_muted
+        if self.incoming and self.incoming.muted != self._paused:
+            self.incoming.muted = self._paused
 
     def replay_last(self, speaker: str = "other") -> bool:
         """Say the last translation again (incoming -> your headphones, outgoing -> the meeting)."""
@@ -223,7 +269,8 @@ class TranslationSession:
             with self._lock:
                 msg = Message(self._next_id, "me" if direction == "outgoing" else "other",
                               event["source_language"], event["source_text"], event["target_language"],
-                              event["translated_text"], time.time(), event["latency_ms"], event["spoken"])
+                              event["translated_text"], time.time(), event["latency_ms"], event["spoken"],
+                              event.get("same_language", False))
                 self._next_id += 1
                 self.history.append(msg)
             event = {**event, "message": msg.__dict__}
@@ -241,6 +288,23 @@ class TranslationSession:
             self._on_event(event)
         except Exception:
             log.exception("session event callback failed")
+
+
+def _as_session_error(exc: Exception) -> SessionError:
+    """Turn a device/model failure into a code the UI can explain in the user's language."""
+    from app.services.stt.base import STTUnavailableError
+    from app.services.translation.base import TranslationUnavailableError
+
+    name = type(exc).__name__
+    codes = {
+        "MicrophoneUnavailableError": "microphone",
+        "SpeakerUnavailableError": "speaker",
+        "MeetingAudioUnavailableError": "meeting_capture",
+        "UnsupportedLanguageError": "language",
+    }
+    if isinstance(exc, (STTUnavailableError, TranslationUnavailableError)):
+        return SessionError("models", str(exc))
+    return SessionError(codes.get(name, "engine"), str(exc))
 
 
 class NullSink:

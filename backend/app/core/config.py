@@ -56,7 +56,10 @@ class Settings:
         for f in fields(cls):
             env = os.environ.get(f"TRANSLATOR_{f.name.upper()}")
             if env is not None:
-                values[f.name] = _coerce(f.default, env)
+                try:
+                    values[f.name] = validate(f.name, env)
+                except InvalidSettingError:
+                    pass
         values.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**values)
 
@@ -64,9 +67,9 @@ class Settings:
         return asdict(self)
 
     def updated(self, **changes) -> "Settings":
-        known = {f.name: f.default for f in fields(self)}
-        clean = {k: _coerce(known[k], v) for k, v in changes.items() if k in known}
-        return replace(self, **clean)
+        """A copy with `changes` applied; unknown keys are ignored, bad values raise InvalidSettingError."""
+        known = {f.name for f in fields(self)}
+        return replace(self, **{k: validate(k, v) for k, v in changes.items() if k in known})
 
     def save(self) -> Path:
         path = settings_path()
@@ -77,11 +80,52 @@ class Settings:
         return path
 
 
+# Allowed values for the settings the UI can change; anything else is rejected with a clear
+# message instead of failing later, deep inside a running session.
+CHOICES: dict[str, tuple[str, ...]] = {
+    "stt_device": ("auto", "cuda", "cpu"),
+    "translation_device": ("auto", "cuda", "cpu"),
+    "latency_mode": ("fast", "balanced", "accurate"),
+    "interruptions": ("smart", "off"),
+    "ui_language": ("ar", "en"),
+}
+RANGES: dict[str, tuple[float, float]] = {
+    "speech_speed": (0.5, 2.0),
+    "language_min_confidence": (0.0, 1.0),
+}
+
+
+class InvalidSettingError(ValueError):
+    pass
+
+
+def validate(name: str, value):
+    """Coerce one setting to its field's type and check it; raises InvalidSettingError."""
+    known = {f.name: f.default for f in fields(Settings)}
+    if name not in known:
+        raise InvalidSettingError(f"unknown setting {name!r}")
+    try:
+        value = _coerce(known[name], value)
+    except (TypeError, ValueError):
+        raise InvalidSettingError(f"invalid value for {name}: {value!r}") from None
+    if name in CHOICES and value not in CHOICES[name]:
+        raise InvalidSettingError(f"{name} must be one of {', '.join(CHOICES[name])}")
+    if name in RANGES:
+        lo, hi = RANGES[name]
+        if not lo <= value <= hi:
+            raise InvalidSettingError(f"{name} must be between {lo} and {hi}")
+    return value
+
+
 def _coerce(default, value):
+    if value is None:
+        return None if default is None else default
     if isinstance(default, bool):
         return value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "yes", "on")
     if isinstance(default, (int, float)) and not isinstance(value, bool):
         return type(default)(value)
+    if isinstance(default, str) and not isinstance(value, str):
+        raise TypeError(f"expected text, got {type(value).__name__}")
     return value
 
 
@@ -121,5 +165,12 @@ def load_saved() -> dict:
         raw = json.loads(settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    known = {f.name: f.default for f in fields(Settings)}
-    return {k: _coerce(known[k], v) for k, v in raw.items() if k in known}
+    if not isinstance(raw, dict):
+        return {}
+    clean = {}
+    for k, v in raw.items():
+        try:  # one bad value (hand-edited file, older version) must not stop the app from opening
+            clean[k] = validate(k, v)
+        except InvalidSettingError:
+            continue
+    return clean

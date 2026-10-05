@@ -48,6 +48,7 @@ class _Utterance:
 
 class LiveDirection:
     MAX_PENDING = 2
+    RECOVER_AFTER_S = (1, 2, 5, 10)  # back-off between attempts to reopen a failed audio source
 
     def __init__(self, name: str, source: AudioSource, segmenter: UtteranceSegmenter,
                  translator: VoiceTranslator, sink: AudioSink, *, on_event: EventCallback | None = None,
@@ -65,6 +66,7 @@ class LiveDirection:
         self._busy = threading.Event()  # worker is using the models
         self._running = threading.Event()
         self._muted = False
+        self._reset_segmenter = False
         self._threads: list[threading.Thread] = []
         self.stats = {"utterances": 0, "dropped_to_text": 0, "errors": 0}
 
@@ -96,7 +98,8 @@ class LiveDirection:
     def muted(self, value: bool) -> None:
         """Muted = keep the stream open but ignore everything heard (privacy 'mute' button)."""
         self._muted = value
-        self.segmenter.reset()
+        self._partial_slot = None
+        self._reset_segmenter = True  # done on the capture thread, which owns the segmenter
         if value:  # what was waiting to be translated must not be spoken after "mute"/"pause"
             with self._pending_lock:
                 for u in self._pending:
@@ -105,30 +108,62 @@ class LiveDirection:
 
     # -- threads -------------------------------------------------------------
     def _capture_loop(self) -> None:
+        failures = 0
         while self._running.is_set():
             try:
                 frame = self.source.read_frame(timeout=0.5)
-            except Exception as exc:  # device unplugged etc.
-                self._emit("error", code="audio_source", message=str(exc))
-                time.sleep(1)
+            except Exception as exc:  # device unplugged, capture helper died...
+                failures += 1
+                if failures == 1:  # tell the user once, not every second
+                    log.warning("%s audio source failed: %s", self.name, exc)
+                    self._emit("error", code="audio_source", message=str(exc))
+                self._recover_source(failures)
                 continue
+            if failures:
+                failures = 0
+                self._emit("recovered")
+            if self._reset_segmenter:
+                self._reset_segmenter = False
+                self.segmenter.reset()
             if frame is None:
                 continue
             if self._muted:
                 continue
-            self.segmenter.paused = bool(self.pause_when and self.pause_when())
-            for ev in self.segmenter.feed(frame):
-                if isinstance(ev, SpeechStarted):
-                    self._emit("speech_started")
-                elif isinstance(ev, PartialAudio) and self.partials:
-                    self._partial_slot = ev.audio
-                    self._partial_event.set()
-                elif isinstance(ev, UtteranceEnded):
-                    self._partial_slot = None
-                    # The speaker actually stopped end_silence_ms ago (that's how we knew):
-                    # measure latency from there, i.e. what the listener really waits.
-                    waited = 0 if ev.forced else self.segmenter.cfg.end_silence_ms / 1000
-                    self._enqueue(_Utterance(ev.audio, time.perf_counter() - waited, ev.forced))
+            try:
+                self._segment(frame)
+            except Exception:  # never let one bad frame kill this direction's capture thread
+                log.exception("%s segmenter failed", self.name)
+                self.segmenter.reset()
+
+    def _segment(self, frame: np.ndarray) -> None:
+        self.segmenter.paused = bool(self.pause_when and self.pause_when())
+        for ev in self.segmenter.feed(frame):
+            if isinstance(ev, SpeechStarted):
+                self._emit("speech_started")
+            elif isinstance(ev, PartialAudio) and self.partials:
+                self._partial_slot = ev.audio
+                self._partial_event.set()
+            elif isinstance(ev, UtteranceEnded):
+                self._partial_slot = None
+                # The speaker actually stopped end_silence_ms ago (that's how we knew):
+                # measure latency from there, i.e. what the listener really waits.
+                waited = 0 if ev.forced else self.segmenter.cfg.end_silence_ms / 1000
+                self._enqueue(_Utterance(ev.audio, time.perf_counter() - waited, ev.forced))
+
+    def _recover_source(self, failures: int) -> None:
+        """Wait a little, then reopen the source (a re-plugged headset, a restarted helper)."""
+        delay = self.RECOVER_AFTER_S[min(failures, len(self.RECOVER_AFTER_S)) - 1]
+        deadline = time.monotonic() + delay
+        while self._running.is_set() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if not self._running.is_set():
+            return
+        try:
+            self.source.stop()
+            self.source.start()
+            self.segmenter.reset()
+        except Exception as exc:
+            log.info("%s audio source still unavailable: %s", self.name, exc)
 
     def _enqueue(self, utt: _Utterance) -> None:
         with self._pending_lock:
@@ -175,6 +210,7 @@ class LiveDirection:
         self._emit("final", source_language=r.language.code, target_language=r.target_language,
                    source_text=r.transcript.text, translated_text=r.translated_text,
                    spoken=bool(first_audio), text_only=r.text_only or not utt.speak,
+                   same_language=r.same_language,
                    detected=r.language.detected, detection=r.language.reason,
                    latency_ms=latency, stt_ms=r.stt_ms, total_ms=r.total_ms, forced_cut=utt.forced)
 

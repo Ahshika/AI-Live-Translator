@@ -51,6 +51,7 @@ def download(url: str, dest: Path, *, retries: int = 20, progress: Progress | No
             last_error = exc
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             last_error = exc
-        log.warning("download %s failed (attempt %d): %s", url, attempt + 1, last_error)
-        time.sleep(min(30, 2 ** attempt))
+        log.warning("download %s failed (attempt %d/%d): %s", url, attempt + 1, retries, last_error)
+        if attempt + 1 < retries:
+            time.sleep(min(30, 2 ** attempt))
     raise ConnectionError(f"Could not download {url}: {last_error}")

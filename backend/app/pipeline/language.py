@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from app.core import languages
 from app.core.languages import AUTO
+from app.utils.text import word_count
 
 
 @dataclass
@@ -47,7 +48,7 @@ class LanguageResolver:
         trusted = (
             lang is not None
             and (confidence or 0.0) >= self.min_confidence
-            and len(text.split()) >= self.MIN_WORDS_FOR_TRUST
+            and word_count(text) >= self.MIN_WORDS_FOR_TRUST
         )
         if trusted:
             self.last_confident = lang.code

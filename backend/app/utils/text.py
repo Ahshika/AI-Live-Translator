@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import re
 
-# . ! ? … ؟ (Arabic) ۔ (Urdu) 。！？ (CJK) followed by whitespace or end of text.
-_SENTENCE_END = re.compile(r"(?<=[.!?…؟۔。！？])\s+")
+# . ! ? … ؟ (Arabic) ۔ (Urdu) followed by whitespace; CJK 。！？ end a sentence even without
+# a following space (Chinese/Japanese don't put spaces between sentences).
+_SENTENCE_END = re.compile(r"(?<=[.!?…؟۔])\s+|(?<=[。！？])\s*")
+# Scripts written without spaces between words: word counts mean nothing there.
+_NO_SPACE_SCRIPTS = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\u0e00-\u0e7f\u0e80-\u0eff\u1000-\u109f\u1780-\u17ff]")
 # Unpunctuated runs from STT can be long; cap a "sentence" so the MT model stays accurate.
 MAX_WORDS = 40
 
@@ -26,3 +29,10 @@ def split_sentences(text: str) -> list[str]:
         if words:
             out.append(" ".join(words))
     return out
+
+
+def word_count(text: str) -> int:
+    """Words, or a rough equivalent for Chinese/Japanese/Thai/Lao/Burmese/Khmer (~2 chars a word)."""
+    spaced = len(text.split())
+    unspaced = len(_NO_SPACE_SCRIPTS.findall(text))
+    return max(spaced, unspaced // 2)

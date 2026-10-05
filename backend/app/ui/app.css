@@ -86,7 +86,13 @@ select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-r
 .hide-original .msg .orig { display: none; }
 .live { display: flex; flex-direction: column; gap: 6px; }
 .live-line { font-size: 14px; color: var(--muted); padding: 6px 10px; border-radius: 10px; background: var(--bg); }
-.live-line::before { content: "… "; }
+.live-line .speaker { font-weight: 600; margin-inline-end: 6px; }
+.live-line.speaking .text:empty::after { content: "● ● ●"; letter-spacing: 2px; animation: blink 1s infinite; }
+.live-line.me { border-inline-start: 3px solid var(--accent); }
+.live-line.other { border-inline-start: 3px solid var(--ok); }
+.convo-tools { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 10px; }
+.stat { font-size: 12px; color: var(--muted); margin-inline-start: auto; }
+.note { background: var(--bg); border: 1px dashed var(--line); border-radius: 12px; padding: 10px 12px; font-size: 13px; line-height: 1.7; color: var(--muted); }
 
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); cursor: pointer; }
 .toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
@@ -115,3 +121,4 @@ dialog::backdrop { background: rgb(0 0 0 / 35%); }
 .toast { position: fixed; inset-inline: 0; bottom: 20px; margin: auto; width: fit-content; max-width: 90vw;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; line-height: 1.6; }
 .toast.bad { background: var(--bad); color: #fff; }
+.toast.warn { background: var(--warn); color: #fff; }

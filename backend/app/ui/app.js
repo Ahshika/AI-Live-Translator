@@ -5,6 +5,8 @@
   let ui = localStorage.getItem("ui_language") || "ar";
   let state = { state: "idle", settings: {} };
   let languages = [];
+  let convo = []; // messages on screen, for copy / export / average delay
+  const escapeHtml = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const T = (key, ...a) => { const v = (I18N[ui] || I18N.ar)[key]; return typeof v === "function" ? v(...a) : (v ?? key); };
 
   // ---------- http ----------
@@ -28,13 +30,14 @@
 
   // ---------- toasts ----------
   let toastTimer;
-  function toast(text, bad = false) {
+  function toast(text, kind = false) {
     const t = $("toast");
+    const cls = kind === true ? "bad" : kind || "";
     t.textContent = text;
-    t.className = "toast" + (bad ? " bad" : "");
+    t.className = "toast" + (cls ? " " + cls : "");
     t.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (t.hidden = true), bad ? 7000 : 3000);
+    toastTimer = setTimeout(() => (t.hidden = true), cls ? 7000 : 3000);
   }
   const errorText = (code, message) => (I18N[ui]["err_" + code] ? T("err_" + code) : `${T("err_engine")}: ${message || code}`);
 
@@ -86,35 +89,74 @@
     $("start-text").textContent = busy ? T(s === "loading_models" ? "loading" : "starting") : T(running ? "stop" : "start");
     for (const id of ["btn-mute", "btn-pause", "btn-replay"]) $(id).disabled = !running;
     $("btn-pause").textContent = T(s === "paused" ? "resume" : "pause");
+    const muted = running && !!state.mic_muted;
+    $("btn-mute").classList.toggle("active", muted);
+    $("btn-mute").textContent = T(muted ? "unmute" : "mute");
+    $("auto-note").hidden = $("other_language").value !== "auto";
+    for (const id of ["btn-copy", "btn-export", "btn-clear-view"]) $(id).disabled = !convo.length;
     for (const id of ["my_language", "other_language", "meeting_app", "btn-swap", "btn-demo"]) $(id).disabled = running || busy;
     const hint = $("hint");
     hint.hidden = !(running && state.mic_for_meeting);
-    if (!hint.hidden) hint.innerHTML = T("hint_mic", state.mic_for_meeting);
+    if (!hint.hidden) hint.innerHTML = T("hint_mic", escapeHtml(state.mic_for_meeting));
   }
 
   function langInfo(code) { return languages.find((l) => l.code === code) || { code, flag: "", name: code, rtl: false }; }
 
+  function updateAverage() {
+    const lat = convo.map((m) => m.latency_ms).filter((v) => v != null);
+    $("avg-latency").hidden = !lat.length;
+    if (lat.length) $("avg-latency").textContent = T("avg_latency", (lat.reduce((a, b) => a + b, 0) / lat.length / 1000).toFixed(1));
+  }
+
+  function clearMessages() {
+    convo = [];
+    $("messages").querySelectorAll(".msg").forEach((n) => n.remove());
+    $("empty").hidden = false;
+    updateAverage();
+    render();
+  }
+
   function addMessage(m) {
     $("empty").hidden = true;
+    convo.push(m);
     const box = $("messages");
     const div = document.createElement("div");
     div.className = "msg " + m.speaker;
     const src = langInfo(m.source_language), tgt = langInfo(m.target_language);
-    const lat = m.latency_ms != null ? `${(m.latency_ms / 1000).toFixed(1)} ${T("ms")}` : T("text_only");
+    const lat = m.latency_ms != null ? `${(m.latency_ms / 1000).toFixed(1)} ${T("ms")}`
+      : m.same_language ? "" : m.spoken === false || m.text_only ? T("text_only") : "";
     const lname = (l) => (ui === "ar" ? AR_NAMES[l.code] || l.name : l.name);
     div.innerHTML = `<div class="who">${m.speaker === "me" ? T("you") : T("them")} · ${lname(src)} ← ${lname(tgt)}</div>
-      <div class="orig" dir="auto"></div><div class="tr" dir="auto"></div><div class="meta">${lat}</div>`;
+      <div class="orig" dir="auto"></div><div class="tr" dir="auto"></div>
+      <div class="meta">${[lat, m.same_language ? T("same_language") : ""].filter(Boolean).join(" · ")}</div>`;
     div.querySelector(".orig").textContent = m.source_text;
     div.querySelector(".tr").textContent = m.translated_text;
+    // Stay at the bottom only if the user hasn't scrolled up to re-read something.
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     box.appendChild(div);
-    box.scrollTop = box.scrollHeight;
+    if (atBottom) box.scrollTop = box.scrollHeight;
+    updateAverage();
+    render();
   }
 
-  function setLive(direction, text) {
+  // Live line per side: "● ● ●" as soon as someone starts talking, then the partial text.
+  function setLive(direction, text, speaking = false) {
     const el = $(direction === "outgoing" ? "live-me" : "live-other");
-    el.hidden = !text;
-    el.textContent = text || "";
-    el.dir = "auto";
+    el.hidden = !text && !speaking;
+    el.classList.toggle("speaking", speaking || !!text);
+    el.querySelector(".speaker").textContent = (direction === "outgoing" ? T("you") : T("them")) + ":";
+    const t = el.querySelector(".text");
+    t.textContent = text || "";
+    t.dir = "auto";
+  }
+
+  function conversationText() {
+    const lname = (code) => { const l = langInfo(code); return ui === "ar" ? AR_NAMES[l.code] || l.name : l.name; };
+    return convo.map((m) => {
+      const when = m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString() : "";
+      const who = m.speaker === "me" ? T("you") : T("them");
+      return `[${when}] ${who} (${lname(m.source_language)}): ${m.source_text}\n    → (${lname(m.target_language)}): ${m.translated_text}`;
+    }).join("\n\n");
   }
 
   // ---------- events ----------
@@ -125,12 +167,29 @@
       switch (ev.type) {
         case "hello":
           state = ev;
-          $("messages").querySelectorAll(".msg").forEach((n) => n.remove());
+          clearMessages();
           (ev.conversation || []).forEach(addMessage);
           render();
           break;
         case "status":
-          if (!ev.direction) { state.state = ev.state; render(); }
+          if (!ev.direction) {
+            state.state = ev.state;
+            if (ev.state === "idle") { state.mic_muted = false; setLive("outgoing", ""); setLive("incoming", ""); }
+            render();
+          }
+          break;
+        case "mic":
+          state.mic_muted = ev.muted;
+          render();
+          break;
+        case "speech_started":
+          setLive(ev.direction, "", true);
+          break;
+        case "warning":
+          if (ev.code === "device_missing") toast(T("warn_device_missing", ev.device), "warn");
+          break;
+        case "recovered":
+          toast(T("recovered"));
           break;
         case "ready":
           state.mic_for_meeting = ev.mic_for_meeting;
@@ -166,7 +225,7 @@
     $("firstrun").hidden = setupPlan.ready;
     if (setupPlan.ready) return;
     const missing = setupPlan.components.filter((c) => !c.installed);
-    $("fr-list").innerHTML = missing.map((c) => `<div class="fr-item"><span>${c.title_ar}</span><span>${size(c.size_mb)}</span></div>`).join("")
+    $("fr-list").innerHTML = missing.map((c) => `<div class="fr-item"><span>${escapeHtml(c.title_ar)}</span><span>${size(c.size_mb)}</span></div>`).join("")
       + `<div class="fr-item"><b>${T("fr_total")}</b><b>${size(missing.reduce((a, c) => a + c.size_mb, 0))}</b></div>`;
     if (setupPlan.downloading) startedDownload();
   }
@@ -203,7 +262,6 @@
       ${c.detail ? `<span class="detail">${escapeHtml(c.detail)}</span>` : ""}
       ${!c.ok && c.fix_ar ? `<span class="fix">${linkify(escapeHtml(c.fix_ar))}</span>` : ""}</div>`).join("");
   }
-  const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const linkify = (s) => s.replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
   // ---------- actions ----------
@@ -235,12 +293,9 @@
     await action("start");
     const r = await api("/api/state"); state = { ...state, ...r }; render();
   };
-  let muted = false;
   $("btn-mute").onclick = async () => {
-    muted = !muted;
-    await action(muted ? "mute" : "unmute");
-    $("btn-mute").classList.toggle("active", muted);
-    $("btn-mute").textContent = T(muted ? "unmute" : "mute");
+    const r = await action(state.mic_muted ? "unmute" : "mute");
+    if (r) render();
   };
   $("btn-demo").onclick = async () => {
     state.state = "starting"; render();
@@ -249,11 +304,38 @@
     const r = await api("/api/state"); state = { ...state, ...r }; render();
   };
   $("btn-pause").onclick = () => action(state.state === "paused" ? "resume" : "pause");
-  $("btn-replay").onclick = () => action("replay", "?speaker=other");
+  $("btn-replay").onclick = async () => {
+    const r = await action("replay", "?speaker=other");
+    if (r && r.ok === false) toast(T("nothing_to_replay"));
+  };
+  $("other_language").onchange = render;
+  $("btn-clear-view").onclick = clearMessages;
+  $("btn-copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(conversationText()); toast(T("copied")); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("btn-export").onclick = () => {
+    const blob = new Blob(["\ufeff" + conversationText()], { type: "text/plain;charset=utf-8" });
+    const a = Object.assign(document.createElement("a"), {
+      href: URL.createObjectURL(blob), download: `conversation-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.txt` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+
+  // Keyboard shortcuts (handy while the meeting window has the focus... once you click back here)
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || $("settings").open) return;
+    const key = e.key.toLowerCase();
+    const running = ["running", "paused"].includes(state.state);
+    if (key === "enter" && !$("btn-start").disabled) { e.preventDefault(); $("btn-start").click(); }
+    else if (key === "m" && running) { e.preventDefault(); $("btn-mute").click(); }
+    else if (key === "r" && running) { e.preventDefault(); $("btn-replay").click(); }
+  });
   $("btn-swap").onclick = () => {
     const a = $("my_language").value, b = $("other_language").value;
     if (b === "auto" || !langInfo(b).can_listen) return;
     $("my_language").value = b; $("other_language").value = a;
+    render();
   };
   $("show_original").onchange = (e) => document.body.classList.toggle("hide-original", !e.target.checked);
   $("btn-lang-ui").onclick = () => {
@@ -276,6 +358,7 @@
     $("speech_speed").value = s.speech_speed;
     $("speed_out").textContent = `×${Number(s.speech_speed).toFixed(2)}`;
     toggles.forEach((k) => ($(k).checked = !!s[k]));
+    $("smart_interruptions").checked = s.interruptions !== "off";
     dlg.showModal();
   };
   $("speech_speed").oninput = (e) => ($("speed_out").textContent = `×${Number(e.target.value).toFixed(2)}`);
@@ -284,13 +367,14 @@
     const changes = { input_device: $("input_device").value || null, output_device: $("output_device").value || null,
       latency_mode: $("latency_mode").value, speech_speed: Number($("speech_speed").value) };
     toggles.forEach((k) => (changes[k] = $(k).checked));
+    changes.interruptions = $("smart_interruptions").checked ? "smart" : "off";
     try { await saveSettings(changes); dlg.close(); toast(T("saved")); } catch {}
   };
   $("btn-history").onclick = async () => {
     const rows = await api("/api/history");
     dlg.close();
     if (!rows.length) return toast(T("history_empty"));
-    $("messages").querySelectorAll(".msg").forEach((n) => n.remove());
+    clearMessages();
     rows.forEach((r) => addMessage({ ...r, latency_ms: null }));
   };
   $("btn-clear-history").onclick = async () => { await api("/api/history", { method: "DELETE" }); toast(T("cleared")); };

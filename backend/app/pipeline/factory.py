@@ -20,10 +20,15 @@ log = logging.getLogger(__name__)
 Direction = Literal["outgoing", "incoming"]
 
 
+# Until the other person has been heard, "translate into their language" (auto) means English.
+AUTO_TARGET_FALLBACK = "en"
+
+
 @dataclass(frozen=True)
 class DirectionLanguages:
     source: str  # may be "auto"
-    target: str
+    target: str  # a real language; see `follows_other` for "auto"
+    follows_other: bool = False  # target = whatever the other side was last heard speaking
 
 
 def direction_languages(settings: Settings, direction: Direction,
@@ -37,10 +42,13 @@ def direction_languages(settings: Settings, direction: Direction,
     if src != languages.AUTO and not languages.can_listen(src):
         raise languages.UnsupportedLanguageError(
             f"Speech in {languages.get(src).name} can't be recognised yet (no speech-recognition support)")
+    follows = False
     if tgt == languages.AUTO:
-        raise languages.UnsupportedLanguageError("The target language can't be 'auto'")
+        if direction != "outgoing":
+            raise languages.UnsupportedLanguageError("Your own language can't be 'auto'")
+        tgt, follows = AUTO_TARGET_FALLBACK, True
     languages.get(tgt)
-    return DirectionLanguages(src, tgt)
+    return DirectionLanguages(src, tgt, follows)
 
 
 @dataclass
@@ -62,9 +70,13 @@ class Providers:
 
 def build_voice_translator(settings: Settings, direction: Direction, *, source: str | None = None,
                            target: str | None = None, voice: str | None = None,
-                           speed: float | None = None, providers: Providers | None = None) -> VoiceTranslator:
+                           speed: float | None = None, providers: Providers | None = None,
+                           follow_target=None) -> VoiceTranslator:
     """Raises UnsupportedLanguageError, STTUnavailableError, TranslationUnavailableError,
-    TTSUnavailableError — callers turn these into user messages."""
+    TTSUnavailableError — callers turn these into user messages.
+
+    follow_target: for an "auto" target, a callable returning the language the other side was
+    last confidently heard speaking (see TranslationSession)."""
     langs = direction_languages(settings, direction, source, target)
     providers = providers or Providers.load(settings)
     stt, mt, tts = providers.stt, providers.mt, providers.tts
@@ -76,7 +88,8 @@ def build_voice_translator(settings: Settings, direction: Direction, *, source: 
         has_voice = False
     hint = settings.other_language if direction == "incoming" and settings.other_language != languages.AUTO else None
     translator = SpeechTranslator(stt, mt, source=langs.source, target=langs.target,
-                                  min_confidence=settings.language_min_confidence, source_hint=hint)
+                                  min_confidence=settings.language_min_confidence, source_hint=hint,
+                                  follow_target=follow_target if langs.follows_other else None)
     vt = VoiceTranslator(translator, tts, voice=voice,
                          speed=speed if speed is not None else settings.speech_speed)
     vt.speak = has_voice

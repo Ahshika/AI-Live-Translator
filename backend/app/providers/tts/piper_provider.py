@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -34,6 +35,11 @@ _QUALITY_RANK = {"high": 0, "medium": 1, "low": 2, "x_low": 3}
 # For automatic downloads prefer "medium": nearly as natural as "high", half the size, faster.
 _DOWNLOAD_RANK = {"medium": 0, "high": 1, "low": 2, "x_low": 3}
 # Piper's voice configs don't record gender; known speakers of the voices we ship.
+# The online voice list is optional (only needed to download a new language's voice). Offline,
+# give up fast and don't ask again for a while — the app must stay instant without internet.
+CATALOG_TIMEOUT_S = 8
+CATALOG_RETRY_AFTER_S = 300
+_catalog_failed_at: dict[Path, float] = {}  # voices folder -> when fetching the list last failed
 _GENDER = {"kareem": "male", "thorsten": "male", "karlsson": "male", "pavoque": "male",
            "kerstin": "female", "ramona": "female", "eva_k": "female", "lessac": "female"}
 
@@ -83,11 +89,23 @@ class PiperProvider(TextToSpeechProvider):
 
     # -- online catalogue (rhasspy/piper-voices) ----------------------------
     def remote_catalog(self) -> dict:
+        """rhasspy/piper-voices' voices.json (cached on disk). Raises ConnectionError offline."""
         if self._remote is None:
             path = self.voices_dir / "voices.json"
             if not path.exists():
-                download(VOICES_URL + "voices.json", path)
-            self._remote = json.loads(path.read_text(encoding="utf-8"))
+                failed = _catalog_failed_at.get(self.voices_dir)
+                if failed is not None and time.monotonic() - failed < CATALOG_RETRY_AFTER_S:
+                    raise ConnectionError("voice list unavailable (offline)")
+                try:
+                    download(VOICES_URL + "voices.json", path, retries=2, timeout=CATALOG_TIMEOUT_S)
+                except (OSError, ConnectionError) as exc:
+                    _catalog_failed_at[self.voices_dir] = time.monotonic()
+                    raise ConnectionError(f"voice list unavailable: {exc}") from exc
+            try:
+                self._remote = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError as exc:  # truncated / corrupted cache: fetch it again next time
+                path.unlink(missing_ok=True)
+                raise ConnectionError(f"voice list is corrupted: {exc}") from exc
         return self._remote
 
     def downloadable_languages(self) -> set[str]:

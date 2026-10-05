@@ -16,6 +16,7 @@ from typing import Callable
 
 import numpy as np
 
+from app.core import languages
 from app.pipeline.language import LanguageDecision
 from app.pipeline.speech_translator import SpeechTranslator
 from app.services.audio.format import duration_seconds
@@ -38,6 +39,7 @@ class VoiceResult:
     first_audio_ms: float | None = None  # the latency the listener actually feels
     total_ms: float = 0.0
     text_only: bool = False  # no voice for the target language -> subtitles only
+    same_language: bool = False  # spoken in the listener's own language: shown, not re-spoken
 
     @property
     def translated_text(self) -> str:
@@ -53,6 +55,7 @@ class VoiceTranslator:
                  voice: str | None = None, speed: float = 1.0):
         self.translator, self.tts, self.voice, self.speed = translator, tts, voice, speed
         self.speak = True  # False = subtitles only (no voice for the target language)
+        self.voiceless: set[str] = set()  # target languages found to have no voice
 
     @property
     def target(self) -> str:
@@ -62,25 +65,32 @@ class VoiceTranslator:
         """speak=False: translate but don't voice it (backlog / subtitles-only)."""
         t0 = time.perf_counter()
         ms = lambda: (time.perf_counter() - t0) * 1000  # noqa: E731
+        target = self.target  # fixed for this utterance even if the followed language changes
         transcript, decision = self.translator.transcribe(audio)
-        result = VoiceResult(transcript, decision, self.target,
+        result = VoiceResult(transcript, decision, target,
                              audio_seconds=duration_seconds(audio), stt_ms=ms())
         if transcript.is_empty:
             result.total_ms = ms()
             return result
-        for source_sentence, translated in self.translator.translate_sentences(transcript.text, decision.code):
+        # They spoke the listener's own language (common with auto-detect in group calls): the
+        # listener already understood it, so show it but don't say it again over them.
+        result.same_language = languages.same_base(decision.code, target)
+        voice = speak and self.speak and target not in self.voiceless and not result.same_language
+        for source_sentence, translated in self.translator.translate_sentences(transcript.text, decision.code,
+                                                                               target):
             result.pairs.append((source_sentence, translated))
-            if not (self.speak and speak):
+            if not voice:
                 result.text_only = True
                 continue
             try:
-                for chunk in self.tts.synthesize_stream(translated, self.target, voice=self.voice,
+                for chunk in self.tts.synthesize_stream(translated, target, voice=self.voice,
                                                         speed=self.speed):
                     if result.first_audio_ms is None:
                         result.first_audio_ms = ms()
                     result.speech_seconds += chunk.seconds
                     sink(chunk)
             except NoVoiceError:
-                self.speak, result.text_only = False, True
+                self.voiceless.add(target)
+                voice, result.text_only = False, True
         result.total_ms = ms()
         return result

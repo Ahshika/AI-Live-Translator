@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -22,7 +23,6 @@ from app.utils.cuda import cuda_runtime_ready, register_cuda_dlls
 log = logging.getLogger(__name__)
 
 
-
 def resolve_model(model: str) -> str:
     """Prefer a pre-downloaded copy in backend/models/faster-whisper-<name> (resumable
     curl download on slow links); otherwise faster-whisper fetches it from Hugging Face."""
@@ -32,9 +32,10 @@ def resolve_model(model: str) -> str:
 
 # Whisper was trained on subtitled video, so on silence/noise it "hears" subtitle credits.
 # In a live call these would be translated and spoken to the other person — never allow that.
+# These phrases are specific enough to drop any short segment that contains them.
 _HALLUCINATIONS = (
     "ترجمة نانسي قنقر", "نانسي قنقر", "اشتركوا في القناة", "اشترك في القناة", "شكرا للمشاهدة",
-    "شكرا على المشاهدة", "سبحان الله وبحمده", "موسيقى",
+    "شكرا على المشاهدة",
     "untertitel der amara.org-community", "untertitel im auftrag des zdf", "untertitelung des zdf",
     "vielen dank fürs zuschauen", "thank you for watching", "thanks for watching",
     "please subscribe", "subtitles by the amara.org community", "sous-titres réalisés par",
@@ -42,13 +43,18 @@ _HALLUCINATIONS = (
 )
 
 
-# Whole-segment outputs Whisper produces for hum/noise; nobody says just "you".
+# Whole-segment outputs Whisper produces for hum/noise/music. Only an EXACT match is dropped:
+# "أنا بحب الموسيقى" or "سبحان الله وبحمده" said in a real sentence must still be translated.
 # ("Thank you." is NOT here: people really say it. The VAD gate keeps noise from reaching STT.)
-_EXACT_HALLUCINATIONS = {"you", "you you", "hmm", "mm", "uh"}
+_EXACT_HALLUCINATIONS = {"you", "you you", "hmm", "mm", "uh", "موسيقى", "music", "musik", "سبحان الله وبحمده"}
+_BRACKETED = re.compile(r"^[\[(♪*].*[\])♪*]$")  # "[موسيقى]", "(Musik)", "♪ ... ♪"
 
 
 def is_hallucination(segment) -> bool:
-    text = segment.text.strip().lower().strip(" .!?،؟")
+    raw = segment.text.strip()
+    if _BRACKETED.match(raw):
+        return True
+    text = raw.lower().strip(" .!?،؟")
     if not text or text in _EXACT_HALLUCINATIONS:
         return True
     if any(h in text for h in _HALLUCINATIONS) and len(text) < 60:

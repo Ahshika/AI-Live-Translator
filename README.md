@@ -56,7 +56,7 @@ Meeting audio (DE) → speech-to-text → translate → Arabic voice → your he
 |---|---|
 | `backend/app/` | The engine: audio, providers (STT / translation / TTS / VAD), live session, local API server, UI |
 | `backend/scripts/` | Step-by-step demo scripts for each build phase (mic → text, → translation, → voice …) |
-| `backend/tests/` | 85 tests (model and audio-device tests are opt-in) |
+| `backend/tests/` | 106 tests (model and audio-device tests are opt-in) |
 | `native/ProcessLoopback/` | C# helper that captures one app's audio |
 | `packaging/` | PyInstaller spec, Inno Setup script, release script |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Platforms](docs/PLATFORMS.md) · [Testing](docs/TESTING.md) · [Accounts & SaaS plan](docs/SAAS.md) |
